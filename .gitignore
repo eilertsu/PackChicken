@@ -1,16 +1,28 @@
-# never commit private keys
-secrets.env
-email_ingest.sqlite
-
-#project files
-pyproject.toml
-uv.lock
-.python-version
-.venv
-attachments
-__pycache__
-
-
-#dev
-.gitignore
+# --- never commit private keys / local secrets
 .env
+secrets.env
+
+# --- local runtime state
+*.sqlite
+*.db
+__pycache__/
+*.py[cod]
+*.log
+logs/
+.cache/
+.venv/
+.uv/
+.python-version
+
+# --- OS cruft
+.DS_Store
+Thumbs.db
+
+# --- project artifacts to keep (DO NOT ignore these)
+# pyproject.toml
+# uv.lock
+# README.md
+# requirements.txt
+
+# --- optional
+attachments/

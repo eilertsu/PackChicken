@@ -49,6 +49,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import request
 
+from packchicken.config import get_settings
+from packchicken.utils.logging import get_logger
+
+
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 load_dotenv(".env")
