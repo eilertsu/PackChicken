@@ -1,0 +1,11 @@
+# never commit private keys
+secrets.env
+email_ingest.sqlite
+
+#project files
+pyproject.toml
+uv.lock
+.python-version
+.venv
+attachments
+__pycache__
