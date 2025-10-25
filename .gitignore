@@ -9,3 +9,8 @@ uv.lock
 .venv
 attachments
 __pycache__
+
+
+#dev
+.gitignore
+.env
