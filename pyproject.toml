@@ -1,7 +1,7 @@
 [project]
 name = "packchicken"
 version = "0.1.0"
-description = "Add your description here"
+description = "🐔 PackChicken automates Shopify order fulfillment — fetching new orders, booking shipments via Bring’s API, and updating tracking information automatically. "
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
