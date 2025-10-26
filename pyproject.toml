@@ -9,5 +9,6 @@ dependencies = [
     "pydantic>=2.12.3",
     "pydantic-settings>=2.11.0",
     "python-dotenv>=1.1.1",
+    "reportlab>=4.4.4",
     "requests>=2.32.5",
 ]
