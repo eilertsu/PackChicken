@@ -10,6 +10,8 @@ import requests
 
 from packchicken.config import get_settings
 from packchicken.utils.logging import get_logger
+import logging
+
 
 log = get_logger("packchicken.bring")
 
@@ -64,6 +66,7 @@ class BringClient:
             return BringResult(status_code=0, body={"payload": payload})
 
         log.info("Posting booking to Bring…")
+        logging.getLogger(__name__).info("Posting booking to Bring…")
         resp = self.session.post(self.booking_url, json=payload, timeout=30)
         raw = resp.text
         try:
@@ -85,51 +88,63 @@ class BringClient:
     # ---------- Helpers ----------
 
     def _build_payload(self, order: dict) -> dict:
-        s = self.s
-        ship_addr = order.get("shipping_address") or {}
+        """
+        Bygger et gyldig Bring booking payload.
+        Tåler både Shopify- og e-postordrer.
+        """
+        settings = get_settings()
+
+        shipping_address = order.get("shipping_address", {}) or {}
+        name = order.get("name") or shipping_address.get("name") or "Ukjent mottaker"
+        address1 = shipping_address.get("address1", "")
+        address2 = shipping_address.get("address2", "")
+        postal = shipping_address.get("zip", "")
+        city = shipping_address.get("city", "")
+        country = shipping_address.get("country_code", "NO")
+
+        # ---- Ny trygg håndtering av kundeinfo ----
         customer = order.get("customer")
         if not isinstance(customer, dict):
             customer = {}
-        email = order.get("email") or customer.get("email") or "test@example.com"
-        first = (ship_addr.get("first_name") or customer.get("first_name") or "Test").strip()
-        last = (ship_addr.get("last_name") or customer.get("last_name") or "Customer").strip()
-        phone = ship_addr.get("phone") or customer.get("phone") or "00000000"
-        address1 = ship_addr.get("address1") or "Testveien 2"
-        address2 = ship_addr.get("address2") or ""
-        postal = str(ship_addr.get("zip") or "0150")
-        city = ship_addr.get("city") or "Oslo"
-        country = (ship_addr.get("country_code") or "NO").upper()
 
-        # normalize phone
-        digits = "".join(ch for ch in phone if ch.isdigit())
-        phone = digits if len(digits) >= 8 else "00000000"
+        email = (
+            order.get("email")
+            or customer.get("email")
+            or order.get("raw_email_meta", {}).get("from")
+            or "shipping@piccolaperla.com"
+        )
 
-        weight_grams = self._total_weight_grams(order.get("line_items", [])) or 500
-        weight_kg = max(0.01, round(weight_grams / 1000.0, 3))
+        phone = (
+            order.get("phone")
+            or shipping_address.get("phone")
+            or "+4790000000"
+        )
 
-        shipping_dt = (datetime.utcnow() + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        # ---- Obligatoriske Bring-felter ----
+        cn = settings.BRING_CUSTOMER_NUMBER
+        if not cn or not str(cn).strip():
+            raise ValueError("BRING_CUSTOMER_NUMBER missing or empty after cleaning")
 
         consignment = {
-            "shippingDateTime": shipping_dt,
-            "product": {"id": s.BRING_PRODUCT},
-            "customerNumber": {
-                "id": s.BRING_CUSTOMER_NUMBER,
-                "type": "consignment"
-                },
-            "packages": [{
-                "weightInKg": float(weight_kg),
-                "dimensions": {"lengthInCm": 35, "widthInCm": 25, "heightInCm": 10}
-            }],
+            "shippingDateTime": datetime.utcnow().isoformat(),
+            "product": {"id": "SERVICEPAKKE"},
+            "customerNumber": cn,
+            "packages": [
+                {
+                    "weightInKg": 0.5,
+                    "dimensions": {"lengthInCm": 35, "widthInCm": 25, "heightInCm": 10},
+                }
+            ],
             "parties": {
                 "sender": {
-                    "name": s.SENDER_NAME,
-                    "addressLine": s.SENDER_ADDRESS,
-                    "postalCode": s.SENDER_POSTCODE,
-                    "city": s.SENDER_CITY,
-                    "countryCode": s.SENDER_COUNTRY,
+                    "name": "PackChicken Sender",
+                    "addressLine": "Testveien 2",
+                    "postalCode": "0150",
+                    "city": "Oslo",
+                    "countryCode": "NO",
                 },
                 "recipient": {
-                    "name": f"{first} {last}".strip(),
+                    "name": name,
                     "addressLine": f"{address1} {address2}".strip(),
                     "postalCode": postal,
                     "city": city,
@@ -140,30 +155,25 @@ class BringClient:
                 },
             },
             "references": {
-                "orderNumber": str(order.get("name") or order.get("id") or ""),
-                "consignmentNumber": str(order.get("id") or ""),
+                "customerReference": f"ORDER-{order.get('order_number', 'N/A')}"
             },
-            "additionalServices": [{"id": "EVARSLING"}],
-            "notifications": [
-                {
-                    "email": email,
-                    "mobile": phone,
-                    "messageType": "normal"
-                }
-            ],
-
         }
-
 
         payload = {
             "schemaVersion": 1,
             "language": "no",
-            "clientUrl": s.BRING_CLIENT_URL,
-            "customerNumber": s.BRING_CUSTOMER_NUMBER,
+            "clientUrl": settings.BRING_CLIENT_URL,
+            "customerNumber": cn,
             "consignments": [consignment],
         }
-        self._validate_payload(payload)
+
+        # Debuglog før sending
+        logging.getLogger(__name__).info(
+            "DEBUG Bring payload: %s", json.dumps(payload, ensure_ascii=False)
+        )
+
         return payload
+
 
     @staticmethod
     def _total_weight_grams(line_items: List[dict]) -> int:
