@@ -87,7 +87,9 @@ class BringClient:
     def _build_payload(self, order: dict) -> dict:
         s = self.s
         ship_addr = order.get("shipping_address") or {}
-        customer = order.get("customer") or {}
+        customer = order.get("customer")
+        if not isinstance(customer, dict):
+            customer = {}
         email = order.get("email") or customer.get("email") or "test@example.com"
         first = (ship_addr.get("first_name") or customer.get("first_name") or "Test").strip()
         last = (ship_addr.get("last_name") or customer.get("last_name") or "Customer").strip()

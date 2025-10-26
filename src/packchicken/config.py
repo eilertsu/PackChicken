@@ -14,6 +14,7 @@ except Exception:
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
+import re
 
 
 class Settings(BaseSettings):
@@ -26,9 +27,11 @@ class Settings(BaseSettings):
     @field_validator("BRING_CUSTOMER_NUMBER", mode="before")
     @classmethod
     def _clean_customer_number(cls, v):
-            if v is None:
-                return v
-            return str(v).strip()
+        if v is None:
+            return v
+        s = str(v).strip()
+        digits = re.sub(r"\D+", "", s)  # fjerner alt unntatt tall
+        return digits or s
 
 
     # --- App ---
