@@ -23,6 +23,13 @@ class Settings(BaseSettings):
       1) Environment variables
       2) .env file (if present)
     """
+    @field_validator("BRING_CUSTOMER_NUMBER", mode="before")
+    @classmethod
+    def _clean_customer_number(cls, v):
+            if v is None:
+                return v
+            return str(v).strip()
+
 
     # --- App ---
     ENV: Literal["dev", "test", "prod"] = Field(default="dev", description="Environment profile")
@@ -41,7 +48,8 @@ class Settings(BaseSettings):
     BRING_TEST_INDICATOR: bool = Field(default=True, description="Send test flag to Bring booking")
     BRING_PRODUCT: str = Field(default="SERVICEPAKKE", description="Default Bring product code")
     BRING_CLIENT_URL: str = Field(default="http://localhost:8000", description="Client URL header for Bring")
-    BRING_BOOKING_URL: str = Field(default="https://api.bring.com/booking/api/booking", description="Bring booking endpoint")
+    BRING_BOOKING_URL: str = Field(default="https://api.bring.com/booking/api/create")
+
 
     # --- Sender defaults (for Bring) ---
     SENDER_NAME: str = Field(default="PackChicken Sender", description="Default sender name for consignment")
@@ -84,13 +92,22 @@ class Settings(BaseSettings):
 
 
 @lru_cache()
+@lru_cache()
 def get_settings() -> Settings:
     # Load secrets first so .env can reference them
     if os.path.exists("secrets.env"):
         load_dotenv("secrets.env", override=True)
+    if os.path.exists("../secrets.env"):
+        load_dotenv("../secrets.env", override=True)
+
+    # Then non-secret .env
     if os.path.exists(".env"):
         load_dotenv(".env", override=False)
+    if os.path.exists("../.env"):
+        load_dotenv("../.env", override=False)
+
     return Settings()
+
 
 
 def settings_summary() -> str:
