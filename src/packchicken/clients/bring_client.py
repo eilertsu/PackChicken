@@ -1,231 +1,187 @@
-# src/packchicken/clients/bring_client.py
+# src/packchicken/bring_client.py
 from __future__ import annotations
-
+import os
 import json
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Optional, List
-
-import requests
-
-from packchicken.config import get_settings
-from packchicken.utils.logging import get_logger
 import logging
+from typing import Any, Dict, List, Optional
+import requests
+from requests import Response
+from pathlib import Path
+from dotenv import load_dotenv  # pip install python-dotenv
+
+# last secrets.env hvis den finnes
+for candidate in (".env", "secrets.env"):
+    p = Path(candidate)
+    if p.exists():
+        load_dotenv(p)
+        break
 
 
-log = get_logger("packchicken.bring")
+DEFAULT_TIMEOUT = (10, 30)  # (connect, read) seconds
 
-
-@dataclass
-class BringResult:
-    status_code: int
-    body: dict
-    tracking_number: Optional[str] = None
-    raw_text: Optional[str] = None
-
+class BringError(RuntimeError):
+    def __init__(self, message: str, response: Optional[Response] = None):
+        super().__init__(message)
+        self.response = response
+        self.status_code = getattr(response, "status_code", None)
+        try:
+            self.payload = None if response is None else response.json()
+        except Exception:
+            self.payload = response.text if response is not None else None
 
 class BringClient:
     """
-    Minimal Bring Booking API client for PackChicken.
-    Creates consignments and extracts tracking number from Bring response.
+    Minimal klient for Bring Booking API.
+
+    Støtter test (testIndicator=true) og prod (testIndicator=false).
+    Henter nøkler fra miljøvariabler:
+      - BRING_API_UID
+      - BRING_API_KEY
+      - BRING_CUSTOMER_NUMBER
+      - BRING_TEST_INDICATOR (true/false)
+      - BRING_CLIENT_URL (valgfri identifikator for hvem som kaller API)
     """
 
-    def __init__(self):
-        s = get_settings()
-        s.require_bring()
-        self.s = s
+    def __init__(
+        self,
+        api_uid: Optional[str] = None,
+        api_key: Optional[str] = None,
+        customer_number: Optional[str] = None,
+        test_indicator: Optional[bool] = None,
+        client_url: Optional[str] = None,
+        session: Optional[requests.Session] = None,
+    ):
+        self.api_uid = api_uid or os.getenv("BRING_API_UID")
+        self.api_key = api_key or os.getenv("BRING_API_KEY")
+        self.customer_number = customer_number or os.getenv("BRING_CUSTOMER_NUMBER")
+        self.test_indicator = (
+            str(test_indicator).lower() if test_indicator is not None else (os.getenv("BRING_TEST_INDICATOR", "true").lower())
+        ) in ("1", "true", "yes", "y")
+        self.client_url = client_url or os.getenv("BRING_CLIENT_URL")
 
-        # HTTP session + riktige headere
-        self.session = requests.Session()
-        self.session.headers.update({
-            "X-Mybring-API-Uid": s.BRING_API_UID,
-            "X-Mybring-API-Key": s.BRING_API_KEY,
-            "X-MyBring-API-Uid": s.BRING_API_UID,
-            "X-MyBring-API-Key": s.BRING_API_KEY,
-            "X-Bring-Client-URL": s.BRING_CLIENT_URL,
-            "X-Bring-Test-Indicator": "true" if s.BRING_TEST_INDICATOR else "false",
-            "X-Mybring-Customer-Number": s.BRING_CUSTOMER_NUMBER,
+        if not self.api_uid or not self.api_key:
+            raise ValueError("BRING_API_UID og/eller BRING_API_KEY mangler.")
+
+        if not self.customer_number:
+            raise ValueError("BRING_CUSTOMER_NUMBER mangler.")
+
+        # Booking endpoint er likt for test/prod; 'testIndicator' i payload styrer modusen.
+        self.endpoint = "https://api.bring.com/booking/api/booking"
+
+        self.session = session or requests.Session()
+        self.log = logging.getLogger(__name__)
+
+    # --- Headers & request helper -------------------------------------------------
+
+    def _headers(self) -> Dict[str, str]:
+        # Historisk har Bring brukt X-MyBring-API-* headere.
+        # Accept og Content-Type må være JSON.
+        headers = {
             "Accept": "application/json",
-            "Content-Type": "application/json",
-        })
+            "Content-Type": "application/json; charset=utf-8",
+            "X-MyBring-API-Uid": self.api_uid,
+            "X-MyBring-API-Key": self.api_key,
+        }
+        if self.client_url:
+            # nyttig for Bring for å identifisere klient (frivillig)
+            headers["X-Bring-Client-URL"] = self.client_url
+        return headers
 
+    def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        body = json.dumps(payload, ensure_ascii=False)
+        resp = self.session.post(
+            self.endpoint,
+            data=body.encode("utf-8"),
+            headers=self._headers(),
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if not resp.ok:
+            # prøv å gi nyttig feil
+            text = resp.text
+            try:
+                parsed = resp.json()
+            except Exception:
+                parsed = text
+            raise BringError(f"Bring booking feilet: HTTP {resp.status_code}", resp)
 
-        # Riktig endpoint (kan overstyres via env)
-        self.booking_url = s.BRING_BOOKING_URL or "https://api.bring.com/booking/api/create"
-
-    # ---------- Public API ----------
-
-    def book_consignment(self, order: dict, dry_run: bool = False) -> BringResult:
-        """
-        Build a booking payload from a Shopify-like order dict and post to Bring.
-        Set dry_run=True to only validate and return the payload (status_code=0).
-        """
-        payload = self._build_payload(order)
-
-        if dry_run:
-            return BringResult(status_code=0, body={"payload": payload})
-
-        log.info("Posting booking to Bring…")
-        logging.getLogger(__name__).info("Posting booking to Bring…")
-        resp = self.session.post(self.booking_url, json=payload, timeout=30)
-        raw = resp.text
         try:
-            body = resp.json()
-        except Exception:
-            body = {"raw": raw}
+            return resp.json()
+        except Exception as e:
+            raise BringError(f"Ugyldig JSON-respons fra Bring: {e}", resp)
 
-        if resp.status_code >= 400:
-            log.error(f"Bring booking failed HTTP {resp.status_code}: {body}")
-            return BringResult(status_code=resp.status_code, body=body, tracking_number=None, raw_text=raw)
+    # --- Public API ---------------------------------------------------------------
 
-        tracking = self._extract_tracking(body)
-        if tracking:
-            log.info(f"Bring booking OK, tracking={tracking}")
-        else:
-            log.warning(f"Bring booking OK but no tracking found. BODY keys={list(body.keys())}")
-        return BringResult(status_code=resp.status_code, body=body, tracking_number=tracking, raw_text=raw)
-
-    # ---------- Helpers ----------
-
-    def _build_payload(self, order: dict) -> dict:
+    def build_booking_payload(
+        self,
+        *,
+        recipient: Dict[str, Any],
+        sender: Dict[str, Any],
+        return_to: Optional[Dict[str, Any]] = None,
+        packages: List[Dict[str, Any]],
+        product_id: str,
+        additional_services: Optional[List[Dict[str, str]]] = None,
+        shipping_datetime_iso: str,
+        correlation_id: str = "INTERNAL-0001",
+        package_correlation_prefix: str = "PACKAGE",
+        goods_description: Optional[str] = None,
+        schema_version: int = 1,
+        pickup_point: Optional[Dict[str, Any]] = None,
+        reference: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Bygger et gyldig Bring booking payload.
-        Tåler både Shopify- og e-postordrer.
+        Lager payload på formatet Bring forventer (i tråd med eksempelet ditt).
         """
-        settings = get_settings()
 
-        shipping_address = order.get("shipping_address", {}) or {}
-        name = order.get("name") or shipping_address.get("name") or "Ukjent mottaker"
-        address1 = shipping_address.get("address1", "")
-        address2 = shipping_address.get("address2", "")
-        postal = shipping_address.get("zip", "")
-        city = shipping_address.get("city", "")
-        country = shipping_address.get("country_code", "NO")
+        # Sett sammen pakker med dimensjoner/vekt og valgfri beskrivelse
+        normalized_packages: List[Dict[str, Any]] = []
+        for idx, p in enumerate(packages, start=1):
+            pkg = {
+                "containerId": p.get("containerId"),
+                "correlationId": p.get("correlationId") or f"{package_correlation_prefix}-{idx}",
+                "dimensions": {
+                    "heightInCm": p["dimensions"]["heightInCm"],
+                    "lengthInCm": p["dimensions"]["lengthInCm"],
+                    "widthInCm": p["dimensions"]["widthInCm"],
+                },
+                "goodsDescription": p.get("goodsDescription") or goods_description or "Goods",
+                "packageType": p.get("packageType"),
+                "weightInKg": p["weightInKg"],
+            }
+            normalized_packages.append(pkg)
 
-        # ---- Ny trygg håndtering av kundeinfo ----
-        customer = order.get("customer")
-        if not isinstance(customer, dict):
-            customer = {}
-
-        email = (
-            order.get("email")
-            or customer.get("email")
-            or order.get("raw_email_meta", {}).get("from")
-            or "shipping@piccolaperla.com"
-        )
-
-        phone = (
-            order.get("phone")
-            or shipping_address.get("phone")
-            or "+4790000000"
-        )
-
-        # ---- Obligatoriske Bring-felter ----
-        cn = settings.BRING_CUSTOMER_NUMBER
-        if not cn or not str(cn).strip():
-            raise ValueError("BRING_CUSTOMER_NUMBER missing or empty after cleaning")
-
-        consignment = {
-            "shippingDateTime": datetime.utcnow().isoformat(),
-            "product": {"id": "SERVICEPAKKE"},
-            "customerNumber": cn,
-            "packages": [
+        payload: Dict[str, Any] = {
+            "consignments": [
                 {
-                    "weightInKg": 0.5,
-                    "dimensions": {"lengthInCm": 35, "widthInCm": 25, "heightInCm": 10},
+                    "correlationId": correlation_id,
+                    "packages": normalized_packages,
+                    "parties": {
+                        "pickupPoint": pickup_point,  # som regel None for hjem/hentested
+                        "recipient": recipient,
+                        "returnTo": return_to,
+                        "sender": sender,
+                    },
+                    "product": {
+                        "additionalServices": additional_services or [],
+                        "customerNumber": str(self.customer_number),
+                        "id": str(product_id),
+                    },
+                    "shippingDateTime": shipping_datetime_iso,
                 }
             ],
-            "parties": {
-                "sender": {
-                    "name": "PackChicken Sender",
-                    "addressLine": "Testveien 2",
-                    "postalCode": "0150",
-                    "city": "Oslo",
-                    "countryCode": "NO",
-                },
-                "recipient": {
-                    "name": name,
-                    "addressLine": f"{address1} {address2}".strip(),
-                    "postalCode": postal,
-                    "city": city,
-                    "countryCode": country,
-                    "emailAddress": email,
-                    "mobileNumber": phone,
-                    "phoneNumber": phone,
-                },
-            },
-            "references": {
-                "customerReference": f"ORDER-{order.get('order_number', 'N/A')}"
-            },
+            "schemaVersion": schema_version,
+            "testIndicator": bool(self.test_indicator),
         }
 
-        payload = {
-            "schemaVersion": 1,
-            "language": "no",
-            "clientUrl": settings.BRING_CLIENT_URL,
-            "customerNumber": cn,
-            "consignments": [consignment],
-        }
-
-        # Debuglog før sending
-        logging.getLogger(__name__).info(
-            "DEBUG Bring payload: %s", json.dumps(payload, ensure_ascii=False)
-        )
+        # Legg til referansefelt hvis ønsket (Bring aksepterer "reference" under recipient/sender)
+        if reference:
+            payload["consignments"][0]["parties"]["recipient"]["reference"] = reference
 
         return payload
 
-
-    @staticmethod
-    def _total_weight_grams(line_items: List[dict]) -> int:
-        total = 0
-        for li in line_items or []:
-            grams = int(li.get("grams") or 0)
-            qty = int(li.get("quantity") or 1)
-            total += max(0, grams) * max(1, qty)
-        return total
-
-    @staticmethod
-    def _extract_tracking(body: dict) -> Optional[str]:
-        try:
-            consignments = body.get("consignments") or []
-            if not consignments:
-                return None
-            c0 = consignments[0]
-            return (
-                (c0.get("confirmation") or {}).get("consignmentNumber")
-                or c0.get("consignmentNumber")
-                or c0.get("trackingNumber")
-            )
-        except Exception:
-            return None
-
-    @staticmethod
-    def _validate_payload(payload: dict) -> None:
+    def book_shipment(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Basic sanity-check for Bring payload before sending.
-        Ensures required top-level + per-consignment fields exist.
+        Kjører selve bookingkallet. For test benyttes samme endpoint, men
+        payload.testIndicator=True gjør at Bring ikke oppretter ekte sending.
         """
-        try:
-            # Top-level checks
-            assert payload.get("customerNumber"), "customerNumber missing"
-            assert payload.get("schemaVersion") == 1, "schemaVersion must be 1"
-            assert isinstance(payload.get("consignments"), list) and payload["consignments"], "no consignments"
-
-            cons = payload["consignments"][0]
-            r = cons["parties"]["recipient"]
-            s = cons["parties"]["sender"]
-
-            # Per-consignment checks
-            assert "product" in cons and isinstance(cons["product"], dict), "product.id missing"
-            assert cons["product"].get("id"), "product.id missing"
-            pkg = cons["packages"][0]
-            assert float(pkg["weightInKg"]) > 0, "weightInKg must be > 0"
-            dims = pkg.get("dimensions")
-            assert dims and all(k in dims for k in ("lengthInCm", "widthInCm", "heightInCm")), "dimensions missing"
-
-            # Sender/recipient sanity
-            for key in ("name", "addressLine", "postalCode", "city", "countryCode"):
-                assert s.get(key), f"sender.{key} missing"
-                assert r.get(key), f"recipient.{key} missing"
-        except (KeyError, IndexError, AssertionError) as e:
-            raise ValueError(f"Invalid Bring payload: {e}")
+        self.log.debug("Sender booking til Bring (test=%s)", payload.get("testIndicator"))
+        return self._post(payload)

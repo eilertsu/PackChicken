@@ -1,148 +1,191 @@
 #!/usr/bin/env python3
-import os, sys, json, requests
-from dotenv import load_dotenv
-load_dotenv(".env")
-load_dotenv("secrets.env", override=True)
+"""
+Bring Booking API smoke test for PackChicken.
 
+This script exercises the "Home Mailbox Parcel" flow (product id 3584) using
+credentials and addresses supplied via environment variables/.env files.
+It is intended as a manual sanity check that the configured Bring account can
+create bookings (typically in test mode).
+"""
 
-API_UID = os.getenv("BRING_API_UID") or os.getenv("BRING_UID")
-API_KEY = os.getenv("BRING_API_KEY") or os.getenv("BRING_KEY")
-CLIENT_URL = os.getenv("BRING_CLIENT_URL") or os.getenv("SHOPIFY_DOMAIN") or "https://example.com/packchicken-test"
+from __future__ import annotations
 
-
-#sjekk etter .env variabler
-if not API_UID or not API_KEY:
-    print("❌ Mangler BRING_API_UID/BRING_UID eller BRING_API_KEY/BRING_KEY i .env")
-    sys.exit(1)
-
-HDRS_BASE = {
-    "X-Mybring-API-Uid": API_UID,
-    "X-Mybring-API-Key": API_KEY,
-    "X-Bring-Client-URL": CLIENT_URL,
-    "Accept": "application/json",
-}
-
-def get_customers():
-    url = "https://api.bring.com/customer-info/customers"
-    r = requests.get(url, headers=HDRS_BASE, timeout=20)
-    if not r.ok:
-        print("❌ Klarte ikke å hente kunder fra Customer Info API:", r.status_code, r.text[:500])
-        sys.exit(1)
-    return r.json().get("customers", [])
-
-customers = get_customers()
-if not customers:
-    print("⚠️ Ingen kunder returnert for brukeren din.")
-    print("   → Be Bring åpne test-kundenumre (5/6/7) for kontoen din, eller bruk ditt faktiske kundenummer.")
-    sys.exit(1)
-
-# Velg kunde + produkt
-preferred_products = ["5000", "BUSINESS_PARCEL", "PICKUP_PARCEL", "5800"]  # vanlige og trygge valg
-chosen_customer = None
-chosen_product = None
-
-for c in customers:
-    prods = c.get("products", []) or []
-    # prøv å finne en av de foretrukne
-    match = next((p for p in preferred_products if p in prods), None)
-    if match:
-        chosen_customer = c
-        chosen_product = match
-        break
-
-# hvis ingen “preferred” – ta første tilgjengelige
-if not chosen_customer:
-    chosen_customer = customers[0]
-    chosen_product = (chosen_customer.get("products") or ["5000"])[0]
-
-print("🔧 FUNNET KUNDE/PRODUKT:")
-print("  customerNumber:", chosen_customer.get("customerNumber"), "| country:", chosen_customer.get("countryCode"))
-print("  product.id:", chosen_product)
-
+import json
+import os
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-dispatch_dt = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
+import requests
+from dotenv import load_dotenv
 
-payload = {
-    "schemaVersion": 1,
-    "clientUrl": CLIENT_URL,
-    "consignments": [
-        {
-            "shippingDateTime": dispatch_dt,          # ← VIKTIG: inni hver consignment
-            "product": {
-                "id": chosen_product,                  # f.eks. "5000"
-                "customerNumber": str(chosen_customer.get("customerNumber"))
-            },
-            "parties": {
-                "sender": {
-                    "name": "PackChicken AS",
-                    "addressLine": "Karl Johans gate 1",
-                    "postalCode": "0154",
-                    "city": "Oslo",
-                    "countryCode": "NO",
-                    "contact": {"name": "Test", "phoneNumber": "+4712345678", "email": "test@example.com"}
+ROOT = Path(__file__).resolve().parents[1]
+ENV_FILES = (ROOT / ".env", ROOT / "secrets.env")
+for env_file in ENV_FILES:
+    if env_file.exists():
+        load_dotenv(env_file, override=True)
+
+
+def env_bool(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y"}
+
+
+def require_env(name: str, fallback: Optional[str] = None) -> str:
+    value = os.getenv(name) or fallback
+    if not value:
+        print(f"❌ Missing environment variable: {name}")
+        sys.exit(1)
+    return value
+
+
+def build_payload(customer_number: str, test_indicator: bool) -> Dict[str, Any]:
+    shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
+
+    return {
+        "schemaVersion": 1,
+        "testIndicator": test_indicator,
+        "consignments": [
+            {
+                "correlationId": os.getenv("BRING_CONSIGNMENT_CORRELATION", "INTERNAL-123456"),
+                "shippingDateTime": shipping_time,
+                "product": {
+                    "id": os.getenv("BRING_PRODUCT_ID", "3584"),
+                    "customerNumber": customer_number,
+                    "additionalServices": [
+                        {"id": os.getenv("BRING_ADDITIONAL_SERVICE_ID", "1081")}
+                    ],
                 },
-                "recipient": {
-                    "name": "Ola Nordmann",
-                    "addressLine": "Bergensgata 2",
-                    "postalCode": "0468",
-                    "city": "Oslo",
-                    "countryCode": "NO",
-                    "contact": {"name": "Ola Nordmann", "phoneNumber": "+4791234567", "email": "ola@example.com"}
-                }
-            },
-            "packages": [
-                {
-                    "weightInKg": 1.0,
-                    "dimensions": {"lengthInCm": 30, "widthInCm": 20, "heightInCm": 10},
-                    "goodsDescription": "Booking API health check"
-                }
-            ]
-        }
-    ]
-}
+                "parties": {
+                    "pickupPoint": None,
+                    "returnTo": {
+                        "name": os.getenv("BRING_RETURN_NAME", "ABC"),
+                        "addressLine": os.getenv("BRING_RETURN_ADDRESS", "Alf Bjerckes vei 29"),
+                        "addressLine2": os.getenv("BRING_RETURN_ADDRESS2", ""),
+                        "postalCode": os.getenv("BRING_RETURN_POSTAL", "0582"),
+                        "city": os.getenv("BRING_RETURN_CITY", "OSLO"),
+                        "countryCode": os.getenv("BRING_RETURN_COUNTRY", "NO"),
+                    },
+                    "sender": {
+                        "name": os.getenv("BRING_SENDER_NAME", "Ola Nordmann"),
+                        "addressLine": os.getenv("BRING_SENDER_ADDRESS", "Testsvingen 12"),
+                        "addressLine2": os.getenv("BRING_SENDER_ADDRESS2"),
+                        "postalCode": os.getenv("BRING_SENDER_POSTAL", "0263"),
+                        "city": os.getenv("BRING_SENDER_CITY", "OSLO"),
+                        "countryCode": os.getenv("BRING_SENDER_COUNTRY", "NO"),
+                        "reference": os.getenv("BRING_SENDER_REF", "1234"),
+                        "contact": {
+                            "name": os.getenv("BRING_SENDER_CONTACT", "Trond Nordmann"),
+                            "email": os.getenv("BRING_SENDER_EMAIL", "trond@nordmanntest.no"),
+                            "phoneNumber": os.getenv("BRING_SENDER_PHONE", "+4712345678"),
+                        },
+                    },
+                    "recipient": {
+                        "name": os.getenv("BRING_RECIPIENT_NAME", "Tore Mottaker"),
+                        "addressLine": os.getenv("BRING_RECIPIENT_ADDRESS", "Mottakerveien 14"),
+                        "addressLine2": os.getenv("BRING_RECIPIENT_ADDRESS2", "c/o Tina Mottaker"),
+                        "postalCode": os.getenv("BRING_RECIPIENT_POSTAL", "0659"),
+                        "city": os.getenv("BRING_RECIPIENT_CITY", "OSLO"),
+                        "countryCode": os.getenv("BRING_RECIPIENT_COUNTRY", "NO"),
+                        "reference": os.getenv("BRING_RECIPIENT_REF", "43242"),
+                        "contact": {
+                            "name": os.getenv("BRING_RECIPIENT_CONTACT", "Tore mottaker"),
+                            "email": os.getenv("BRING_RECIPIENT_EMAIL", "tore@mottakertest.no"),
+                            "phoneNumber": os.getenv("BRING_RECIPIENT_PHONE", "+4791234567"),
+                        },
+                    },
+                },
+                "packages": [
+                    {
+                        "containerId": None,
+                        "correlationId": os.getenv("BRING_PACKAGE_CORRELATION", "PACKAGE-123"),
+                        "packageType": os.getenv("BRING_PACKAGE_TYPE"),
+                        "goodsDescription": os.getenv("BRING_GOODS_DESCRIPTION", "Testing equipment"),
+                        "weightInKg": float(os.getenv("BRING_WEIGHT_KG", "1.1")),
+                        "dimensions": {
+                            "lengthInCm": int(os.getenv("BRING_LENGTH_CM", "23")),
+                            "widthInCm": int(os.getenv("BRING_WIDTH_CM", "10")),
+                            "heightInCm": int(os.getenv("BRING_HEIGHT_CM", "13")),
+                        },
+                    }
+                ],
+            }
+        ],
+    }
 
 
-
-print("  shippingDateTime brukt:", dispatch_dt)
-# print("PAYLOAD:", json.dumps(payload, indent=2, ensure_ascii=False))  # hvis du vil se hele
-
-
-# Booking i testmodus
-url = "https://api.bring.com/booking/api/create"
-headers = {**HDRS_BASE, "X-Bring-Test-Indicator": "true", "Content-Type": "application/json"}
-
-print("▶️ Tester Booking API (testIndicator=True)...")
-resp = requests.post(url, headers=headers, json=payload, timeout=30)
-print("HTTP status:", resp.status_code)
-ct = resp.headers.get("Content-Type", "")
-if "application/json" in ct:
-    print(json.dumps(resp.json(), indent=2, ensure_ascii=False)[:2000])
-else:
-    print(resp.text[:1000])
+def explain_errors(payload: Dict[str, Any]) -> None:
+    consignments = payload.get("consignments") or []
+    if not consignments:
+        print("Ingen consignments i responsen.")
+        return
+    for consignment in consignments:
+        for err in consignment.get("errors", []):
+            print(f"  • code={err.get('code')} id={err.get('uniqueId')}")
+            for msg in err.get("messages", []):
+                text = f"    [{msg.get('lang')}] {msg.get('message')}"
+                if msg.get("details"):
+                    text += f" ({msg['details']})"
+                print(text)
 
 
-if resp.ok:
-    cons = resp.json()["consignments"][0]
-    conf = cons["confirmation"]
-    cn = conf["consignmentNumber"]
-    pkg = conf["packages"][0]["packageNumber"]
-    track_url = conf["links"]["tracking"]
-    labels_url = conf["links"]["labels"]
-    print("\n✅ Booking API test OK")
-    print("  Consignment:", cn)
-    print("  Package:    ", pkg)
-    print("  Tracking:   ", track_url)
-    print("  Labels:     ", labels_url)
+def main() -> None:
+    api_uid = os.getenv("BRING_API_UID") or os.getenv("BRING_UID")
+    api_key = os.getenv("BRING_API_KEY") or os.getenv("BRING_KEY")
+    if not api_uid or not api_key:
+        print("❌ BRING_API_UID/BRING_UID og/eller BRING_API_KEY/BRING_KEY mangler.")
+        sys.exit(1)
 
-    # (valgfritt) ping Tracking API med samme headere:
-    import requests
-    t = requests.get(
-        "https://api.bring.com/tracking/api/v2/tracking.json",
-        headers={k: v for k, v in headers.items() if k != "Content-Type"},
-        params={"q": cn, "lang": "no"},
-        timeout=15,
-    )
-    print("\n🔎 Tracking-status:", t.status_code)
-    if t.ok:
-        print("  apiVersion:", t.json().get("apiVersion"))
+    customer_number = require_env("BRING_CUSTOMER_NUMBER")
+    client_url = os.getenv("BRING_CLIENT_URL") or os.getenv("SHOPIFY_DOMAIN") or "https://example.com/packchicken"
+    test_indicator = env_bool("BRING_TEST_INDICATOR", True)
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-Mybring-API-Uid": api_uid,
+        "X-Mybring-API-Key": api_key,
+        "X-Bring-Client-URL": client_url,
+        "X-Bring-Test-Indicator": "true" if test_indicator else "false",
+    }
+
+    payload = build_payload(customer_number, test_indicator)
+
+    print("▶️ Tester Bring Booking API (Home Mailbox Parcel)...")
+    print("  customerNumber:", customer_number)
+    print("  productId:", payload["consignments"][0]["product"]["id"])
+    print("  testIndicator:", test_indicator)
+
+    resp = requests.post("https://api.bring.com/booking/api/create", headers=headers, json=payload, timeout=30)
+    print("HTTP status:", resp.status_code)
+
+    ct = resp.headers.get("Content-Type", "")
+    parsed = resp.json() if "application/json" in (ct or "").lower() else None
+    if parsed is not None:
+        print(json.dumps(parsed, indent=2, ensure_ascii=False))
+    else:
+        print(resp.text[:1000])
+
+    if resp.ok and parsed:
+        consignment = parsed["consignments"][0]
+        confirmation = consignment["confirmation"]
+        print("\n✅ Booking OK")
+        print("  Consignment:", confirmation.get("consignmentNumber"))
+        packages = confirmation.get("packages") or []
+        if packages:
+            print("  Package:", packages[0].get("packageNumber"))
+        links = confirmation.get("links") or {}
+        if links:
+            print("  Tracking:", links.get("tracking"))
+            print("  Labels:", links.get("labels"))
+    else:
+        print("\n❌ Booking feilet.")
+        if parsed:
+            explain_errors(parsed)
+
+
+if __name__ == "__main__":
+    main()
