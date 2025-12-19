@@ -2,12 +2,10 @@
 """
 Bring Booking API smoke test for PackChicken.
 
-This script exercises the "Home Mailbox Parcel" flow (product id 3584) using
-credentials and addresses supplied via environment variables/.env files.
-It is intended as a manual sanity check that the configured Bring account can
-create bookings (typically in test mode).
+Exercises Home Mailbox Parcel (product id 3584 by default) using credentials
+from .env/secrets.env. Intended for manual verification that Bring credentials
+are valid before enabling automation.
 """
-
 from __future__ import annotations
 
 import json
@@ -21,10 +19,9 @@ import requests
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
-ENV_FILES = (ROOT / ".env", ROOT / "secrets.env")
-for env_file in ENV_FILES:
-    if env_file.exists():
-        load_dotenv(env_file, override=True)
+for candidate in (ROOT / ".env", ROOT / "secrets.env"):
+    if candidate.exists():
+        load_dotenv(candidate, override=True)
 
 
 def env_bool(name: str, default: bool = True) -> bool:
@@ -44,7 +41,6 @@ def require_env(name: str, fallback: Optional[str] = None) -> str:
 
 def build_payload(customer_number: str, test_indicator: bool) -> Dict[str, Any]:
     shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
-
     return {
         "schemaVersion": 1,
         "testIndicator": test_indicator,

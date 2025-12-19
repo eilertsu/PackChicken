@@ -39,6 +39,7 @@ class ShopifyClient:
             "Accept": "application/json",
             "User-Agent": "PackChicken/1.0 (+ShopifyClient)"
         })
+        self.graphql_url = f"{self.base_url}/graphql.json"
 
     def _request(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
@@ -92,6 +93,21 @@ class ShopifyClient:
         raise requests.HTTPError(f"Shopify API error {resp.status_code}: {detail}", response=resp)
 
     # ---- Public methods ----
+
+    def graphql_query(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Execute a GraphQL query/mutation against the Shopify Admin API.
+        """
+        payload = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        resp = self.session.post(self.graphql_url, json=payload, timeout=DEFAULT_TIMEOUT)
+        if not resp.ok:
+            self._raise_http_error(resp)
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"Shopify GraphQL returned errors: {data['errors']}")
+        return data
 
     def list_unfulfilled_orders(self, limit: int = 50, updated_at_min: Optional[str] = None) -> Dict[str, Any]:
         """

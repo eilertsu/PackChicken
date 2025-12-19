@@ -89,7 +89,10 @@ To test Bring integration without real shipments:
 - Set `BRING_TEST_INDICATOR="true"`
 - Use Bring’s test customer numbers (5, 6, or 7)
 - Create Shopify test orders in “Bogus” payment mode
-- Run the standalone smoke test: `uv run tests/test_bring_booking_api.py`
+- Run the standalone smoke tests:
+  - Shopify orders: `uv run scripts/check_shopify_orders.py --limit 5`
+  - Shopify orders (GraphQL): `uv run scripts/check_shopify_orders_graphql.py --first 5`
+  - Bring booking: `uv run scripts/check_bring_booking.py`
 
 ---
 
