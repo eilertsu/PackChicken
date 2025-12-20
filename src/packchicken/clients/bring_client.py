@@ -54,8 +54,9 @@ class BringClient:
         self.api_uid = api_uid or os.getenv("BRING_API_UID")
         self.api_key = api_key or os.getenv("BRING_API_KEY")
         self.customer_number = customer_number or os.getenv("BRING_CUSTOMER_NUMBER")
+        # Default til produksjon (false) hvis ikke annet er angitt.
         self.test_indicator = (
-            str(test_indicator).lower() if test_indicator is not None else (os.getenv("BRING_TEST_INDICATOR", "true").lower())
+            str(test_indicator).lower() if test_indicator is not None else (os.getenv("BRING_TEST_INDICATOR", "false").lower())
         ) in ("1", "true", "yes", "y")
         self.client_url = client_url or os.getenv("BRING_CLIENT_URL")
 

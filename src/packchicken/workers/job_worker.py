@@ -3,8 +3,7 @@
 PackChicken — Job Worker
 
 Henter "pending" jobber fra jobbkøen (packchicken.db),
-sender dem til Bring (eller dry_run i testmodus), og genererer
-etikett-PDFer automatisk.
+sender dem til Bring (eller dry_run i testmodus), og laster ned etikett-PDFer.
 
 Kjør slik:
     uv run src/packchicken/workers/job_worker.py
@@ -15,24 +14,98 @@ import time
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict
+
+import requests
+from dotenv import load_dotenv
 
 from packchicken.utils import db
 from packchicken.clients.bring_client import BringClient
-from packchicken.utils.pdf import generate_label_only
 
 # ------------------------------------------------------------
 # Konfig
 # ------------------------------------------------------------
 
+for candidate in (Path(".env"), Path("secrets.env"), Path("../.env"), Path("../secrets.env")):
+    if candidate.exists():
+        load_dotenv(candidate, override=True)
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
                     format="%(asctime)s | %(levelname)-8s | %(message)s")
 
-LABEL_DIR = Path(os.getenv("LABEL_DIR", "./labels")).resolve()
+LABEL_DIR = Path(os.getenv("LABEL_DIR", "./attachments")).resolve()
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+
+SENDER = {
+    "name": os.getenv("BRING_SENDER_NAME", "PackChicken Sender"),
+    "addressLine": os.getenv("BRING_SENDER_ADDRESS", "Testveien 2"),
+    "addressLine2": os.getenv("BRING_SENDER_ADDRESS2"),
+    "postalCode": os.getenv("BRING_SENDER_POSTAL", "0150"),
+    "city": os.getenv("BRING_SENDER_CITY", "Oslo"),
+    "countryCode": os.getenv("BRING_SENDER_COUNTRY", "NO"),
+    "reference": os.getenv("BRING_SENDER_REF"),
+    "contact": {
+        "name": os.getenv("BRING_SENDER_CONTACT", "Sender"),
+        "email": os.getenv("BRING_SENDER_EMAIL"),
+        "phoneNumber": os.getenv("BRING_SENDER_PHONE"),
+    },
+}
+
+RETURN_TO = {
+    "name": os.getenv("BRING_RETURN_NAME", "PackChicken Return"),
+    "addressLine": os.getenv("BRING_RETURN_ADDRESS", "Alf Bjerckes vei 29"),
+    "addressLine2": os.getenv("BRING_RETURN_ADDRESS2", ""),
+    "postalCode": os.getenv("BRING_RETURN_POSTAL", "0582"),
+    "city": os.getenv("BRING_RETURN_CITY", "OSLO"),
+    "countryCode": os.getenv("BRING_RETURN_COUNTRY", "NO"),
+}
+
+DEFAULT_PACKAGE = {
+    "weightInKg": float(os.getenv("BRING_WEIGHT_KG", "1.1")),
+    "dimensions": {
+        "lengthInCm": int(os.getenv("BRING_LENGTH_CM", "23")),
+        "widthInCm": int(os.getenv("BRING_WIDTH_CM", "10")),
+        "heightInCm": int(os.getenv("BRING_HEIGHT_CM", "13")),
+    },
+    "goodsDescription": os.getenv("BRING_GOODS_DESCRIPTION", "PackChicken shipment"),
+    "packageType": os.getenv("BRING_PACKAGE_TYPE"),
+}
+
+def build_recipient(order: Dict[str, Any]) -> Dict[str, Any]:
+    shipping = order.get("shipping_address") or {}
+    name = order.get("name") or shipping.get("name") or "Ukjent mottaker"
+    return {
+        "name": name,
+        "addressLine": shipping.get("address1") or "",
+        "addressLine2": shipping.get("address2"),
+        "postalCode": shipping.get("zip") or "",
+        "city": shipping.get("city") or "",
+        "countryCode": (shipping.get("country_code") or "NO").upper(),
+        "reference": order.get("order_number") or order.get("id"),
+        "contact": {
+            "name": name,
+            "email": order.get("email") or shipping.get("email"),
+            "phoneNumber": order.get("phone") or shipping.get("phone"),
+        },
+    }
+
+
+def download_label(url: str, headers: Dict[str, str], destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    logging.info("⬇️ Laster ned label: %s", url)
+    resp = requests.get(url, headers=headers, timeout=30, stream=True)
+    if not resp.ok:
+        logging.error("Klarte ikke å laste ned label (HTTP %s): %s", resp.status_code, resp.text[:500])
+        return
+    with open(destination, "wb") as fh:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                fh.write(chunk)
+    logging.info("✅ Lagret label til %s", destination.resolve())
 
 # ------------------------------------------------------------
 # Kjernefunksjon
@@ -49,28 +122,49 @@ def process_next_job():
     logging.info("🟡 Starter behandling av jobb %s", job_data.get("id"))
 
     try:
-        # Hent ut ordre fra jobben
         order = job_data.get("order") or job_data
         bring = BringClient()
 
         if DRY_RUN:
             logging.info("DRY_RUN=True → simulerer Bring-booking")
             tracking_number = f"SIM-{job_data.get('id')}-{int(time.time())}"
+            labels_url = None
+            package_number = None
         else:
-            result = bring.book_consignment(order, dry_run=False)
-            if result.status_code != 200 or not result.tracking_number:
-                raise RuntimeError(f"Bring booking feilet: {result.body}")
-            tracking_number = result.tracking_number
+            recipient = build_recipient(order)
+            shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
+            payload = bring.build_booking_payload(
+                recipient=recipient,
+                sender=SENDER,
+                return_to=RETURN_TO,
+                packages=[DEFAULT_PACKAGE],
+                product_id=os.getenv("BRING_PRODUCT_ID", "3584"),
+                additional_services=[{"id": os.getenv("BRING_ADDITIONAL_SERVICE_ID", "1081")}],
+                shipping_datetime_iso=shipping_time,
+                reference=order.get("order_number"),
+            )
+            result = bring.book_shipment(payload)
+            consignment = (result.get("consignments") or [{}])[0]
+            confirmation = consignment.get("confirmation") or {}
+            tracking_number = confirmation.get("consignmentNumber")
+            packages = confirmation.get("packages") or []
+            package_number = packages[0].get("packageNumber") if packages else None
+            links = confirmation.get("links") or {}
+            labels_url = links.get("labels")
+            if not tracking_number:
+                raise RuntimeError(f"Bring booking mangler tracking: {result}")
 
-        # Generer etikett
-        label_path = LABEL_DIR / f"label_{job_data.get('id')}.pdf"
-        generate_label_only(order, tracking_number, label_path, size="A6")
-        logging.info("🧾 Etikett generert: %s", label_path)
+        if labels_url:
+            filename = f"label-{package_number or 'unknown'}.pdf"
+            destination = LABEL_DIR / filename
+            download_label(labels_url, bring._headers(), destination)
+        else:
+            logging.info("Ingen labels_url i responsen; hopper over nedlasting.")
 
         db.update_status(job_id, "done")
         logging.info("✅ Ferdig med jobb %s (tracking=%s)", job_data.get("id"), tracking_number)
 
-    except Exception as e:
+    except Exception:
         logging.exception("❌ Feil under behandling av jobb %s", job_data.get("id"))
         db.update_status(job_id, "failed")
     return True

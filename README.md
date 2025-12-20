@@ -12,7 +12,7 @@ It’s built for **full automation** — from receiving new Shopify orders to bo
 - 🔄 Updates Shopify with tracking numbers and fulfillment status  
 - 💸 Works with **Shopify Basic** — no paid apps required  
 - ⚙️ Simple configuration via `.env` file  
-- 📬 Optional email ingestion for automatic order triggers  
+- 📬 Bring labels can be auto-downloaded after booking  
 
 ---
 
@@ -33,7 +33,7 @@ PackChicken connects to Shopify via the Admin API, retrieves new orders, books s
 - Python 3.10+  
 - A Shopify store (with Admin API access token)  
 - Bring API key, UID, and customer number  
-- Optional: Gmail IMAP credentials (for email ingestion)
+- Optional: none
 
 ---
 
@@ -61,11 +61,6 @@ BRING_API_KEY="your_bring_api_key"
 BRING_API_UID="your_bring_uid"
 BRING_CUSTOMER_NUMBER="5"
 BRING_TEST_INDICATOR="true"
-
-# Optional: email ingestion
-IMAP_SERVER="imap.gmail.com"
-IMAP_USER="your@email.com"
-IMAP_PASS="yourpassword"
 ```
 
 ---
@@ -75,7 +70,6 @@ IMAP_PASS="yourpassword"
 Run the worker scripts manually or via systemd / supervisor:
 
 ```bash
-uv run email_ingest_worker.py
 uv run bring_fulfillment_worker.py
 ```
 
