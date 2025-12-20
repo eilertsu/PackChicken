@@ -8,6 +8,7 @@ are valid before enabling automation.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -128,7 +129,30 @@ def explain_errors(payload: Dict[str, Any]) -> None:
                 print(text)
 
 
+def download_label(url: str, headers: Dict[str, str], destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    print(f"▶️ Laster ned label: {url}")
+    resp = requests.get(url, headers=headers, timeout=30, stream=True)
+    if not resp.ok:
+        print(f"❌ Klarte ikke å laste ned label (HTTP {resp.status_code})")
+        try:
+            print(resp.text[:1000])
+        except Exception:
+            pass
+        return
+    with open(destination, "wb") as fh:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                fh.write(chunk)
+    print(f"✅ Lagret label til {destination.resolve()}")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Bring Booking API smoke test (Home Mailbox Parcel).")
+    parser.add_argument("--download-label", action="store_true", help="Last ned label-PDF automatisk")
+    parser.add_argument("--label-dir", default="attachments", help="Katalog for lagring av labels (default: attachments)")
+    args = parser.parse_args()
+
     api_uid = os.getenv("BRING_API_UID") or os.getenv("BRING_UID")
     api_key = os.getenv("BRING_API_KEY") or os.getenv("BRING_KEY")
     if not api_uid or not api_key:
@@ -171,12 +195,20 @@ def main() -> None:
         print("\n✅ Booking OK")
         print("  Consignment:", confirmation.get("consignmentNumber"))
         packages = confirmation.get("packages") or []
-        if packages:
-            print("  Package:", packages[0].get("packageNumber"))
+        package_number = packages[0].get("packageNumber") if packages else None
+        if package_number:
+            print("  Package:", package_number)
+        else:
+            print("  Package: (mangler i respons)")
         links = confirmation.get("links") or {}
+        labels_url = links.get("labels") if isinstance(links, dict) else None
         if links:
             print("  Tracking:", links.get("tracking"))
-            print("  Labels:", links.get("labels"))
+            print("  Labels:", labels_url)
+        if args.download_label and labels_url:
+            filename = f"label-{package_number or 'unknown'}.pdf"
+            destination = Path(args.label_dir) / filename
+            download_label(labels_url, headers, destination)
     else:
         print("\n❌ Booking feilet.")
         if parsed:
