@@ -1,8 +1,0 @@
-python-dotenv
-requests
-flask
-fastapi
-uvicorn
-pydantic
-beautifulsoup4>=4.12
-reportlab>=4.2

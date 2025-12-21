@@ -252,7 +252,6 @@ INDEX_HTML = """
         <p class="card-text">Kjør Bring-booking for pending jobber og slå sammen etiketter til én PDF.</p>
         <div class="stat-row" style="margin-top:10px;">
           <button id="process-btn">Kjør pending nå</button>
-          <button id="refresh-btn" class="secondary">Oppdater</button>
         </div>
         <p class="card-text" style="margin-top:12px;">Etiketter lagres i {{ label_dir }}.</p>
       </div>
@@ -261,7 +260,10 @@ INDEX_HTML = """
     <section class="panel">
       <div style="display:flex; align-items:center; justify-content: space-between;">
         <h3>Siste jobber</h3>
-        <span class="card-text" id="job-count"></span>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span class="card-text" id="job-count"></span>
+          <button id="refresh-btn" class="secondary" style="padding:8px 12px;">Oppdater</button>
+        </div>
       </div>
       <table>
         <thead>
