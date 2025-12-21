@@ -4,7 +4,7 @@ Enkel etikettmotor: les Shopify-ordre fra CSV, book hos Bring, og slå sammen al
 
 ---
 
-## Hva den gjør nå
+## Hva den gjør
 - Leser eksporterte ordre-CSV-er fra `ORDERS/` (samme format som Shopify-export).
 - Booker sending hos Bring (test/staging styres av `BRING_TEST_INDICATOR`).
 - Laster ned Bring-PDFene og slår dem sammen til én fil i `LABELS/` (enkeltlabelene slettes).
@@ -56,19 +56,16 @@ SHOPIFY_UPDATE_FULFILL=false  # true hvis du vil forsøke fulfillment
 ---
 
 ## Kjøring
-Fra repo-roten:
-```bash
-# Ekte booking, ingen fulfillment i Shopify
-./LABELS/process_orders_no_fulfill.sh
+**I Shopify:**
+- Velg ordre og eksporter(plain CSV), lagre i `ORDERS/`.
 
-# Ekte booking + forsøk på Shopify-fulfillment (krever riktige scopes)
-./LABELS/process_orders_with_fulfill.sh
+**Start packchicken ved å kjøre et av skriptene i** `LABELS/` **:**
 
-# Testmodus (Bring test-indikator)
-./LABELS/process_orders_test_mode.sh
-```
+- Ekte booking + Shopify-fulfillment (krever riktige scopes): `process_orders_with_fulfill.sh`
+- Ekte booking, ingen fulfillment i Shopify: `process_orders_no_fulfill.sh`
+- Testmodus (Bring test-etiketter): `process_orders_test_mode.sh`
 
-Resultat: én samlet PDF i `LABELS/labels-merged-YYYYMMDD-HHMMSS.pdf`.
+**Resultat:** én samlet PDF i `LABELS/labels-merged-YYYYMMDD-HHMMSS.pdf`.
 
 ---
 
