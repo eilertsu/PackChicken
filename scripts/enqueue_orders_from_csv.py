@@ -20,30 +20,8 @@ def parse_bool(val: str) -> bool:
     return str(val).strip().lower() in {"true", "1", "yes", "y"}
 
 
-def row_to_job(row: Dict[str, str]) -> Dict[str, Any]:
-    order_id = row.get("Id") or row.get("Name")
-    location_id = os.getenv("SHOPIFY_LOCATION")
-    shipping = {
-        "name": row.get("Shipping Name") or row.get("Name"),
-        "address1": row.get("Shipping Address1") or row.get("Shipping Street"),
-        "address2": row.get("Shipping Address2") or "",
-        "city": row.get("Shipping City") or "",
-        "zip": row.get("Shipping Zip") or "",
-        "country_code": row.get("Shipping Country") or "NO",
-        "phone": row.get("Shipping Phone") or row.get("Phone"),
-        "email": row.get("Email"),
-    }
-    billing = {
-        "name": row.get("Billing Name") or row.get("Name"),
-        "address1": row.get("Billing Address1") or row.get("Billing Street"),
-        "address2": row.get("Billing Address2") or "",
-        "city": row.get("Billing City") or "",
-        "zip": row.get("Billing Zip") or "",
-        "country_code": row.get("Billing Country") or "NO",
-        "phone": row.get("Billing Phone") or row.get("Phone"),
-        "email": row.get("Email"),
-    }
-    line_item = {
+def row_to_line_item(row: Dict[str, str]) -> Dict[str, Any]:
+    return {
         "title": row.get("Lineitem name"),
         "quantity": int(row.get("Lineitem quantity") or 1),
         "price": row.get("Lineitem price"),
@@ -51,20 +29,49 @@ def row_to_job(row: Dict[str, str]) -> Dict[str, Any]:
         "requires_shipping": parse_bool(row.get("Lineitem requires shipping")),
         "grams": int(row.get("Lineitem grams") or 0) if row.get("Lineitem grams") else 0,
     }
+
+
+def pick_address(rows: list[Dict[str, str]], prefix: str) -> Dict[str, Any]:
+    # prefix = "Shipping" or "Billing"
+    for row in rows:
+        if row.get(f"{prefix} Address1") or row.get(f"{prefix} City") or row.get(f"{prefix} Zip"):
+            return {
+                "name": row.get(f"{prefix} Name") or row.get("Name"),
+                "address1": row.get(f"{prefix} Address1") or row.get(f"{prefix} Street"),
+                "address2": row.get(f"{prefix} Address2") or "",
+                "city": row.get(f"{prefix} City") or "",
+                "zip": row.get(f"{prefix} Zip") or "",
+                "country_code": row.get(f"{prefix} Country") or "NO",
+                "phone": row.get(f"{prefix} Phone") or row.get("Phone"),
+                "email": row.get("Email"),
+            }
+    # fallback empty
+    return {"name": rows[0].get("Name"), "address1": "", "address2": "", "city": "", "zip": "", "country_code": "NO", "phone": rows[0].get("Phone"), "email": rows[0].get("Email")}
+
+
+def rows_to_job(rows: list[Dict[str, str]]) -> Dict[str, Any]:
+    # assume all rows belong to same order (Name/Id)
+    first = rows[0]
+    order_id = first.get("Id") or first.get("Name")
+    location_id = os.getenv("SHOPIFY_LOCATION")
+    shipping = pick_address(rows, "Shipping")
+    billing = pick_address(rows, "Billing")
+    line_items = [row_to_line_item(r) for r in rows]
+
     return {
         "id": order_id,
         "source": "csv",
         "order": {
             "id": order_id,
-        "order_number": row.get("Name"),
-        "email": row.get("Email"),
-        "phone": row.get("Phone"),
-        "shipping_address": shipping,
-        "billing_address": billing,
-        "line_items": [line_item],
-        "location_id": location_id,
-    },
-}
+            "order_number": first.get("Name"),
+            "email": first.get("Email"),
+            "phone": first.get("Phone"),
+            "shipping_address": shipping,
+            "billing_address": billing,
+            "line_items": line_items,
+            "location_id": location_id,
+        },
+    }
 
 
 def main() -> None:
@@ -78,13 +85,20 @@ def main() -> None:
 
     db.init_db()
     created = 0
+    grouped: dict[str, list[Dict[str, str]]] = {}
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            job_data = row_to_job(row)
-            db.add_job(job_data)
-            created += 1
-            print(f"✅ La inn jobb for ordre {job_data['id']}")
+            key = row.get("Id") or row.get("Name")
+            if not key:
+                continue
+            grouped.setdefault(key, []).append(row)
+
+    for key, rows in grouped.items():
+        job_data = rows_to_job(rows)
+        db.add_job(job_data)
+        created += 1
+        print(f"✅ La inn jobb for ordre {job_data['id']}")
     print(f"Ferdig: la inn {created} jobber")
 
 

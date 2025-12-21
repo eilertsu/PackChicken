@@ -41,6 +41,7 @@ LABEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
+UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
 
 SENDER = {
     "name": os.getenv("BRING_SENDER_NAME", "PackChicken Sender"),
@@ -109,6 +110,24 @@ def has_min_recipient(recipient: Dict[str, Any]) -> bool:
     return bool(recipient.get("addressLine") and recipient.get("city") and recipient.get("postalCode"))
 
 
+def build_package(order: Dict[str, Any]) -> Dict[str, Any]:
+    line_items = order.get("line_items") or []
+    total_grams = 0
+    titles = []
+    for li in line_items:
+        qty = int(li.get("quantity") or 1)
+        grams = int(li.get("grams") or 0)
+        total_grams += max(0, grams) * max(1, qty)
+        if li.get("title"):
+            titles.append(str(li["title"]))
+    weight_kg = max(DEFAULT_PACKAGE["weightInKg"], total_grams / 1000.0 if total_grams else DEFAULT_PACKAGE["weightInKg"])
+    description = "; ".join(titles) if titles else DEFAULT_PACKAGE["goodsDescription"]
+    pkg = dict(DEFAULT_PACKAGE)
+    pkg["weightInKg"] = round(weight_kg, 3)
+    pkg["goodsDescription"] = description
+    return pkg
+
+
 def download_label(url: str, headers: Dict[str, str], destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     logging.info("⬇️ Laster ned label: %s", url)
@@ -172,7 +191,7 @@ def process_next_job():
                 recipient=recipient,
                 sender=SENDER,
                 return_to=RETURN_TO,
-                packages=[DEFAULT_PACKAGE],
+                packages=[build_package(order)],
                 product_id=os.getenv("BRING_PRODUCT_ID", "3584"),
                 additional_services=[{"id": os.getenv("BRING_ADDITIONAL_SERVICE_ID", "1081")}],
                 shipping_datetime_iso=shipping_time,
@@ -196,8 +215,8 @@ def process_next_job():
         else:
             logging.info("Ingen labels_url i responsen; hopper over nedlasting.")
 
-        # Oppdater Shopify-fulfillment hvis mulig
-        if not DRY_RUN and shopify_client and tracking_number:
+        # Oppdater Shopify-fulfillment hvis ønsket
+        if UPDATE_SHOPIFY_FULFILL and not DRY_RUN and shopify_client and tracking_number:
             try:
                 tracking_url = labels_url or links.get("tracking") if 'links' in locals() else None
                 order_id = order.get("id") or order.get("order_id")
@@ -229,6 +248,8 @@ def process_next_job():
                 logging.info("📦 Oppdaterte Shopify fulfillment (FO minimal) for ordre %s", order_id)
             except Exception:
                 logging.exception("Kunne ikke oppdatere Shopify-fulfillment for ordre %s", order.get("id"))
+        else:
+            logging.info("Hopper over Shopify fulfillment-oppdatering (UPDATE_SHOPIFY_FULFILL=%s)", UPDATE_SHOPIFY_FULFILL)
 
         db.update_status(job_id, "done")
         logging.info("✅ Ferdig med jobb %s (tracking=%s)", job_data.get("id"), tracking_number)
