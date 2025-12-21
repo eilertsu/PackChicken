@@ -33,7 +33,7 @@ cp .env.example .env
 # rediger .env og sett Bring/Shopify-nøkler
 ```
 Miljøvariablene i `.env` brukes både av CLI, GUI og Docker.
-Nøklene er kombinert i én fil (tidligere `secrets.env` er ikke nødvendig).
+Hvis du vil holde hemmeligheter i egen fil, legg dem i `secrets.env` (samme nøkler) – Docker Compose laster både `.env` og `secrets.env` hvis de finnes.
 ```bash
 # Bring
 BRING_API_UID=...
