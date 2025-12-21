@@ -27,7 +27,13 @@ cd PackChicken
 uv sync   # eller pip install -r requirements.txt
 ```
 
-2) Konfigurer miljøvariabler (`.env` eller `secrets.env`)
+2) Lag din `.env` fra malen
+```bash
+cp .env.example .env
+# rediger .env og sett Bring/Shopify-nøkler
+```
+Miljøvariablene i `.env` brukes både av CLI, GUI og Docker.
+Nøklene er kombinert i én fil (tidligere `secrets.env` er ikke nødvendig).
 ```bash
 # Bring
 BRING_API_UID=...
