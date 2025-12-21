@@ -41,6 +41,7 @@ SHOPIFY_TOKEN=...
 SHOPIFY_DOMAIN=https://yourshop.myshopify.com
 SHOPIFY_LOCATION=...          # location_id hvis fulfillment ønskes
 SHOPIFY_UPDATE_FULFILL=false  # true hvis du vil forsøke fulfillment
+LOG_FILE=./logs/packchicken.log  # valgfritt: skriv logg til fil i tillegg til stdout
 ```
 
 ### Hvor finner du nøklene?

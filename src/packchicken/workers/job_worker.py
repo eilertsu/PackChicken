@@ -34,8 +34,16 @@ for candidate in (Path(".env"), Path("secrets.env"), Path("../.env"), Path("../s
         load_dotenv(candidate, override=True)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
-                    format="%(asctime)s | %(levelname)-8s | %(message)s")
+LOG_FILE = os.getenv("LOG_FILE")  # sett til filsti for å logge til fil i tillegg til stdout
+handlers = [logging.StreamHandler()]
+if LOG_FILE:
+    Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+    handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    handlers=handlers,
+)
 
 LABEL_DIR = Path(os.getenv("LABEL_DIR", "./LABELS")).resolve()
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
