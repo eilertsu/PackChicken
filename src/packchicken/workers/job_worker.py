@@ -52,6 +52,7 @@ DRY_RUN = False  # Alltid kjør ekte booking; bruk BRING_TEST_INDICATOR for test
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
 DOWNLOADED_LABELS: list[Path] = []
+PROCESS_ERRORS: list[str] = []
 
 def sender_from_env() -> Dict[str, Any]:
     return {
@@ -297,10 +298,14 @@ def process_next_job(return_label: bool = False):
         logging.info("✅ Ferdig med jobb %s (tracking=%s)", job_data.get("id"), tracking_number)
 
     except BringError as e:
-        logging.error("❌ Bring booking feilet for jobb %s: %s | payload=%s", job_data.get("id"), e, getattr(e, "payload", None))
+        msg = f"Bring booking feilet for jobb {job_data.get('id')}: {e}"
+        logging.error("❌ %s | payload=%s", msg, getattr(e, "payload", None))
+        PROCESS_ERRORS.append(msg)
         db.update_status(job_id, "failed")
-    except Exception:
-        logging.exception("❌ Feil under behandling av jobb %s", job_data.get("id"))
+    except Exception as exc:
+        msg = f"Feil under behandling av jobb {job_data.get('id')}: {exc}"
+        logging.exception("❌ %s", msg)
+        PROCESS_ERRORS.append(msg)
         db.update_status(job_id, "failed")
     return True
 
@@ -319,6 +324,7 @@ def process_all_pending_jobs(
     global UPDATE_SHOPIFY_FULFILL
     db.init_db()
     DOWNLOADED_LABELS.clear()
+    PROCESS_ERRORS.clear()
     processed_jobs = 0
 
     original_test_indicator = os.environ.get("BRING_TEST_INDICATOR")
@@ -369,6 +375,7 @@ def process_all_pending_jobs(
         "processed_jobs": processed_jobs,
         "downloaded_labels": [str(p) for p in DOWNLOADED_LABELS],
         "merged_label": str(merged_label) if merged_label else None,
+        "errors": PROCESS_ERRORS.copy(),
     }
 
 

@@ -648,6 +648,9 @@ INDEX_HTML = """
         if (!procData.ok) throw new Error(procData.error || 'Ukjent feil ved kjøring');
         const modeText = isReturn ? 'returetiketter' : 'etiketter';
         toast(`La til ${added} jobber og kjørte ${procData.processed_jobs || 0} ${modeText}${isTest ? ' (testmodus)' : ''}.`);
+        if (procData.errors && procData.errors.length) {
+            toast(`Noen jobber feilet: ${procData.errors.join('; ').slice(0, 200)}`, 'error');
+        }
         renderDownloads(procData);
         loadJobs();
       } catch (err) {
@@ -677,6 +680,9 @@ INDEX_HTML = """
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Ukjent feil ved fulfillment');
         toast(`Fulfilled ${data.processed_jobs || 0} jobber i Shopify.`);
+        if (data.errors && data.errors.length) {
+          toast(`Noen jobber feilet: ${data.errors.join('; ').slice(0, 200)}`, 'error');
+        }
         loadJobs();
       } catch (err) {
         toast(err.message, 'error');
