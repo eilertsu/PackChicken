@@ -15,7 +15,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -269,6 +269,44 @@ def process_next_job():
     return True
 
 
+def process_all_pending_jobs(poll_interval: int = 0, merge_labels: bool = True) -> Dict[str, Any]:
+    """
+    Behandler alle pending jobber én gang og returnerer et sammendrag.
+    merge_labels=True slår sammen nedlastede etiketter slik CLIen gjør.
+    """
+    db.init_db()
+    DOWNLOADED_LABELS.clear()
+    processed_jobs = 0
+
+    while True:
+        processed = process_next_job()
+        if not processed:
+            break
+        processed_jobs += 1
+        if poll_interval > 0:
+            time.sleep(poll_interval)
+
+    merged_label: Optional[Path] = None
+    if merge_labels and DOWNLOADED_LABELS:
+        merged_label = LABEL_DIR / f"labels-merged-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+        try:
+            combine_pdfs(DOWNLOADED_LABELS, merged_label)
+            logging.info("🗂️  Slått sammen %d label(s) til %s", len(DOWNLOADED_LABELS), merged_label)
+            for p in DOWNLOADED_LABELS:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    logging.debug("Klarte ikke å slette %s", p, exc_info=True)
+        except Exception:
+            logging.exception("Klarte ikke å slå sammen label-PDFer")
+
+    return {
+        "processed_jobs": processed_jobs,
+        "downloaded_labels": [str(p) for p in DOWNLOADED_LABELS],
+        "merged_label": str(merged_label) if merged_label else None,
+    }
+
+
 # ------------------------------------------------------------
 # CLI / main-loop
 # ------------------------------------------------------------
@@ -291,18 +329,4 @@ if __name__ == "__main__":
                 logging.exception("Uventet feil i hoved-loop")
                 time.sleep(poll_interval)
     else:
-        while process_next_job():
-            pass
-        if DOWNLOADED_LABELS:
-            merged = LABEL_DIR / f"labels-merged-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
-            try:
-                combine_pdfs(DOWNLOADED_LABELS, merged)
-                logging.info("🗂️  Slått sammen %d label(s) til %s", len(DOWNLOADED_LABELS), merged)
-                # Fjern enkeltlabelene når de er slått sammen, slik at vi bare sitter igjen med én PDF.
-                for p in DOWNLOADED_LABELS:
-                    try:
-                        p.unlink(missing_ok=True)
-                    except Exception:
-                        logging.debug("Klarte ikke å slette %s", p, exc_info=True)
-            except Exception:
-                logging.exception("Klarte ikke å slå sammen label-PDFer")
+        process_all_pending_jobs()
