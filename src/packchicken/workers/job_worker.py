@@ -21,7 +21,8 @@ import requests
 from dotenv import load_dotenv
 
 from packchicken.utils import db
-from packchicken.clients.bring_client import BringClient
+from packchicken.clients.bring_client import BringClient, BringError
+from packchicken.clients.shopify_client import ShopifyClient
 
 # ------------------------------------------------------------
 # Konfig
@@ -39,6 +40,7 @@ LABEL_DIR = Path(os.getenv("LABEL_DIR", "./attachments")).resolve()
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 
 SENDER = {
     "name": os.getenv("BRING_SENDER_NAME", "PackChicken Sender"),
@@ -77,21 +79,34 @@ DEFAULT_PACKAGE = {
 
 def build_recipient(order: Dict[str, Any]) -> Dict[str, Any]:
     shipping = order.get("shipping_address") or {}
-    name = order.get("name") or shipping.get("name") or "Ukjent mottaker"
+    billing = order.get("billing_address") or {}
+    def _name(addr: Dict[str, Any]) -> str:
+        return (
+            addr.get("name")
+            or " ".join(filter(None, [addr.get("first_name"), addr.get("last_name")]))
+            or ""
+        )
+    name = order.get("name") or _name(shipping) or _name(billing) or "Ukjent mottaker"
+    # Bruk shipping hvis satt, ellers billing
+    base = shipping if shipping.get("address1") or shipping.get("city") or shipping.get("zip") else billing
     return {
         "name": name,
-        "addressLine": shipping.get("address1") or "",
-        "addressLine2": shipping.get("address2"),
-        "postalCode": shipping.get("zip") or "",
-        "city": shipping.get("city") or "",
-        "countryCode": (shipping.get("country_code") or "NO").upper(),
+        "addressLine": base.get("address1") or "",
+        "addressLine2": base.get("address2"),
+        "postalCode": base.get("zip") or "",
+        "city": base.get("city") or "",
+        "countryCode": (base.get("country_code") or "NO").upper(),
         "reference": order.get("order_number") or order.get("id"),
         "contact": {
             "name": name,
-            "email": order.get("email") or shipping.get("email"),
-            "phoneNumber": order.get("phone") or shipping.get("phone"),
+            "email": order.get("email") or base.get("email"),
+            "phoneNumber": order.get("phone") or base.get("phone"),
         },
     }
+
+
+def has_min_recipient(recipient: Dict[str, Any]) -> bool:
+    return bool(recipient.get("addressLine") and recipient.get("city") and recipient.get("postalCode"))
 
 
 def download_label(url: str, headers: Dict[str, str], destination: Path) -> None:
@@ -124,6 +139,11 @@ def process_next_job():
     try:
         order = job_data.get("order") or job_data
         bring = BringClient()
+        shopify_client: ShopifyClient | None = None
+        try:
+            shopify_client = ShopifyClient()
+        except Exception:
+            logging.debug("ShopifyClient init feilet (fortsetter uten fulfillment update)", exc_info=True)
 
         if DRY_RUN:
             logging.info("DRY_RUN=True → simulerer Bring-booking")
@@ -132,6 +152,21 @@ def process_next_job():
             package_number = None
         else:
             recipient = build_recipient(order)
+            # Hvis minimum adresse mangler, prøv å hente full ordre fra Shopify
+            if not has_min_recipient(recipient) and shopify_client:
+                try:
+                    oid = order.get("id") or order.get("order_id")
+                    full = shopify_client.get_order(oid) if oid else None
+                    if full and full.get("order"):
+                        order = full["order"]
+                        recipient = build_recipient(order)
+                        logging.info("Oppdaterte ordre fra Shopify for adressefelt. shipping_address=%s", order.get("shipping_address"))
+                except Exception:
+                    logging.exception("Kunne ikke hente ordre fra Shopify for adresseoppdatering")
+
+            if not has_min_recipient(recipient):
+                logging.error("Manglende adresse etter alle forsøk. Recipient=%s", recipient)
+                raise RuntimeError("Manglende adressefelt (addressLine/city/postalCode) for mottaker")
             shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
             payload = bring.build_booking_payload(
                 recipient=recipient,
@@ -161,9 +196,46 @@ def process_next_job():
         else:
             logging.info("Ingen labels_url i responsen; hopper over nedlasting.")
 
+        # Oppdater Shopify-fulfillment hvis mulig
+        if not DRY_RUN and shopify_client and tracking_number:
+            try:
+                tracking_url = labels_url or links.get("tracking") if 'links' in locals() else None
+                order_id = order.get("id") or order.get("order_id")
+                location_id = order.get("location_id") or SHOPIFY_LOCATION_ID
+
+                # Fulfillment Orders API med minimal payload
+                fo_resp = shopify_client.list_fulfillment_orders(order_id)
+                fos = fo_resp.get("fulfillment_orders") or []
+                if not fos:
+                    raise RuntimeError("Ingen fulfillment_orders returnert for ordre")
+                fo = fos[0]
+                fulfillment_order_id = fo.get("id")
+                line_items = fo.get("line_items") or []
+                if not line_items:
+                    raise RuntimeError("Ingen line_items i fulfillment_order")
+                line_item_id = line_items[0].get("id")
+                qty = line_items[0].get("quantity") or 1
+
+                shopify_client.fulfill_fulfillment_order_minimal(
+                    fulfillment_order_id=fulfillment_order_id,
+                    line_item_id=line_item_id,
+                    quantity=qty,
+                    tracking_number=tracking_number,
+                    tracking_url=tracking_url,
+                    location_id=location_id,
+                    company="Bring",
+                    notify_customer=False,
+                )
+                logging.info("📦 Oppdaterte Shopify fulfillment (FO minimal) for ordre %s", order_id)
+            except Exception:
+                logging.exception("Kunne ikke oppdatere Shopify-fulfillment for ordre %s", order.get("id"))
+
         db.update_status(job_id, "done")
         logging.info("✅ Ferdig med jobb %s (tracking=%s)", job_data.get("id"), tracking_number)
 
+    except BringError as e:
+        logging.error("❌ Bring booking feilet for jobb %s: %s | payload=%s", job_data.get("id"), e, getattr(e, "payload", None))
+        db.update_status(job_id, "failed")
     except Exception:
         logging.exception("❌ Feil under behandling av jobb %s", job_data.get("id"))
         db.update_status(job_id, "failed")

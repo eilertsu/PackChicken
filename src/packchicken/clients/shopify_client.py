@@ -150,3 +150,59 @@ class ShopifyClient:
             payload["fulfillment"]["location_id"] = location_id
 
         return self._request("POST", f"/orders/{order_id}/fulfillments.json", json=payload)
+
+    def create_order(self, order_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a new order via REST Admin API.
+        `order_payload` should follow Shopify's orders.json format under the "order" key.
+        """
+        return self._request("POST", "/orders.json", json={"order": order_payload})
+
+    # ---- Fulfillment Orders (new API) ----
+
+    def list_fulfillment_orders(self, order_id: int | str) -> Dict[str, Any]:
+        """
+        Fetch fulfillment orders for a given order (REST).
+        """
+        return self._request("GET", f"/orders/{order_id}/fulfillment_orders.json")
+
+    def fulfill_fulfillment_order_minimal(
+        self,
+        fulfillment_order_id: int | str,
+        line_item_id: int | str,
+        quantity: int,
+        tracking_number: str,
+        tracking_url: Optional[str],
+        location_id: Optional[int | str],
+        company: str = "Bring",
+        notify_customer: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Minimal fulfillment call using line_items_by_fulfillment_order (works per Shopify example).
+        """
+        payload = {
+            "fulfillment": {
+                "notify_customer": bool(notify_customer),
+                "tracking_info": {
+                    "number": tracking_number,
+                    "url": tracking_url,
+                    "company": company,
+                },
+                "line_items_by_fulfillment_order": [
+                    {
+                        "fulfillment_order_id": fulfillment_order_id,
+                        "fulfillment_order_line_items": [
+                            {"id": int(line_item_id), "quantity": int(quantity)}
+                        ],
+                    }
+                ],
+            }
+        }
+        if location_id:
+            payload["fulfillment"]["location_id"] = int(location_id)
+
+        return self._request(
+            "POST",
+            f"/fulfillments.json",
+            json=payload,
+        )
