@@ -209,7 +209,8 @@ def process_next_job():
                 raise RuntimeError(f"Bring booking mangler tracking: {result}")
 
         if labels_url:
-            filename = f"label-{package_number or 'unknown'}.pdf"
+            test_suffix = "(test)-" if payload.get("testIndicator") else ""
+            filename = f"label-{test_suffix}{package_number or 'unknown'}.pdf"
             destination = LABEL_DIR / filename
             download_label(labels_url, bring._headers(), destination)
         else:
