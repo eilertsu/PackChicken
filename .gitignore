@@ -26,3 +26,7 @@ Thumbs.db
 
 # --- optional
 attachments/
+# Local data
+ORDERS/*
+LABELS/*.pdf
+!ORDERS/.gitkeep
