@@ -269,14 +269,29 @@ def process_next_job():
     return True
 
 
-def process_all_pending_jobs(poll_interval: int = 0, merge_labels: bool = True) -> Dict[str, Any]:
+def process_all_pending_jobs(
+    poll_interval: int = 0,
+    merge_labels: bool = True,
+    test_indicator: Optional[bool] = None,
+    update_fulfill: Optional[bool] = None,
+) -> Dict[str, Any]:
     """
     Behandler alle pending jobber én gang og returnerer et sammendrag.
     merge_labels=True slår sammen nedlastede etiketter slik CLIen gjør.
     """
+    global UPDATE_SHOPIFY_FULFILL
     db.init_db()
     DOWNLOADED_LABELS.clear()
     processed_jobs = 0
+
+    original_test_indicator = os.environ.get("BRING_TEST_INDICATOR")
+    original_fulfill = os.environ.get("SHOPIFY_UPDATE_FULFILL")
+    original_flag = UPDATE_SHOPIFY_FULFILL
+    if test_indicator is not None:
+        os.environ["BRING_TEST_INDICATOR"] = "true" if test_indicator else "false"
+    if update_fulfill is not None:
+        os.environ["SHOPIFY_UPDATE_FULFILL"] = "true" if update_fulfill else "false"
+        UPDATE_SHOPIFY_FULFILL = bool(update_fulfill)
 
     while True:
         processed = process_next_job()
@@ -299,6 +314,19 @@ def process_all_pending_jobs(poll_interval: int = 0, merge_labels: bool = True) 
                     logging.debug("Klarte ikke å slette %s", p, exc_info=True)
         except Exception:
             logging.exception("Klarte ikke å slå sammen label-PDFer")
+
+    # Revert envs to prior values so callers don't leak state
+    if test_indicator is not None:
+        if original_test_indicator is None:
+            os.environ.pop("BRING_TEST_INDICATOR", None)
+        else:
+            os.environ["BRING_TEST_INDICATOR"] = original_test_indicator
+    if update_fulfill is not None:
+        if original_fulfill is None:
+            os.environ.pop("SHOPIFY_UPDATE_FULFILL", None)
+        else:
+            os.environ["SHOPIFY_UPDATE_FULFILL"] = original_fulfill
+        UPDATE_SHOPIFY_FULFILL = original_flag
 
     return {
         "processed_jobs": processed_jobs,

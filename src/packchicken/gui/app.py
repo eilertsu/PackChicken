@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 CURRENT_FILE = Path(__file__).resolve()
@@ -134,9 +134,39 @@ def api_upload():
 
 @app.post("/api/process")
 def api_process():
-    summary = process_all_pending_jobs()
+    is_test = str(request.args.get("test", "false")).lower() in {"1", "true", "yes", "y"}
+    do_fulfill = str(request.args.get("fulfill", "false")).lower() in {"1", "true", "yes", "y"}
+    summary = process_all_pending_jobs(test_indicator=is_test, update_fulfill=do_fulfill)
+    summary["ok"] = True
+    summary["test_mode"] = is_test
+    summary["fulfill"] = do_fulfill
+    # Build download-friendly URLs for merged/single labels
+    def label_url(path_str: str | None) -> str | None:
+        if not path_str:
+            return None
+        p = Path(path_str)
+        if not p.exists():
+            return None
+        return f"/labels/{p.name}"
+
+    summary["merged_label_url"] = label_url(summary.get("merged_label"))
+    summary["label_urls"] = [label_url(p) for p in summary.get("downloaded_labels", []) if label_url(p)]
+    summary["merged_label_name"] = Path(summary["merged_label"]).name if summary.get("merged_label") else None
+    summary["label_names"] = [Path(p).name for p in summary.get("downloaded_labels", [])]
+    return jsonify(summary)
+
+
+@app.post("/api/fulfill")
+def api_fulfill():
+    summary = process_all_pending_jobs(test_indicator=False, update_fulfill=True)
     summary["ok"] = True
     return jsonify(summary)
+
+
+@app.get("/labels/<path:filename>")
+def serve_label(filename: str):
+    # Serve generated label PDFs from LABEL_DIR
+    return send_from_directory(LABEL_DIR, filename, as_attachment=True)
 
 
 INDEX_HTML = """
@@ -181,13 +211,37 @@ INDEX_HTML = """
       box-shadow: 0 20px 50px rgba(0,0,0,0.35);
     }
     .panel h3 { margin: 0 0 12px; letter-spacing: -0.2px; }
-    .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .stat-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
     .stat { background: var(--card); padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); min-width: 140px; }
     .stat label { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
     .stat strong { font-size: 22px; }
     form { display: grid; gap: 10px; }
-    input[type="file"] { padding: 10px; border-radius: 10px; border: 1px dashed rgba(255,255,255,0.15); background: rgba(255,255,255,0.02); color: var(--text); }
-    button {
+    .file-picker {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      text-align: center;
+      gap: 12px;
+      padding: 32px 16px;
+      border: 1px dashed rgba(255,255,255,0.2);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.03);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .file-picker:hover { border-color: rgba(163,230,53,0.6); background: rgba(255,255,255,0.05); }
+    .file-picker.dragging { border-color: var(--accent-2); background: rgba(34,211,238,0.08); }
+    .file-picker input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .file-picker .label { font-weight: 600; }
+    button, .btn {
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       color: #0b1220;
       border: none;
@@ -197,9 +251,60 @@ INDEX_HTML = """
       cursor: pointer;
       transition: transform 120ms ease, box-shadow 120ms ease;
       box-shadow: 0 10px 25px rgba(34,211,238,0.25);
+      height: 46px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
     }
-    button:hover { transform: translateY(-1px); box-shadow: 0 16px 40px rgba(34,211,238,0.35); }
-    button.secondary { background: #1f2937; color: var(--text); box-shadow: none; border: 1px solid rgba(255,255,255,0.08); }
+    button:hover, .btn:hover { transform: translateY(-1px); box-shadow: 0 16px 40px rgba(34,211,238,0.35); }
+    button.secondary, .btn.secondary { background: #1f2937; color: var(--text); box-shadow: none; border: 1px solid rgba(255,255,255,0.08); }
+    button:disabled, .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+      background: #1f2937;
+      color: var(--muted);
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      user-select: none;
+    }
+    .toggle input { display: none; }
+    .switch {
+      position: relative;
+      width: 48px;
+      height: 26px;
+      background: #1f2937;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      transition: background 120ms ease, border 120ms ease;
+    }
+    .switch::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      background: var(--text);
+      border-radius: 50%;
+      transition: transform 140ms ease, background 120ms ease;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    }
+    .toggle input:checked + .switch {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border-color: rgba(255,255,255,0.2);
+    }
+    .toggle input:checked + .switch::after {
+      transform: translateX(22px);
+      background: #0b1220;
+    }
     .card-text { color: var(--muted); font-size: 14px; }
     table { width: 100%; border-collapse: collapse; margin-top: 6px; }
     th, td { padding: 10px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); text-align: left; }
@@ -220,40 +325,62 @@ INDEX_HTML = """
     }
     #toast.error { border-color: rgba(248,113,113,0.4); }
     @media (max-width: 640px) { .stat { min-width: 46%; } }
+    .download-item { margin-top: 10px; padding: 10px; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; background: rgba(255,255,255,0.02); }
+    .download-name { font-weight: 600; color: var(--text); }
+    .download-actions { margin-top: 8px; }
   </style>
 </head>
 <body>
   <div class="shell">
     <header>
       <h1>PackChicken Dashboard</h1>
-      <p class="lead">Last opp ordre-CSV, legg i kø og kjør Bring-booking fra nettleseren.</p>
+      <p class="lead">Last opp ordre-CSV fra shopify og kjør Bring-booking fra nettleseren.</p>
     </header>
 
     <section class="panel">
       <h3>Oversikt</h3>
       <div class="stat-row" id="stats">
-        <div class="stat"><label>Pending</label><strong>0</strong></div>
+        <div class="stat"><label>Totalt</label><strong>0</strong></div>
         <div class="stat"><label>Done</label><strong>0</strong></div>
         <div class="stat"><label>Failed</label><strong>0</strong></div>
       </div>
     </section>
 
-    <section class="panel grid two">
-      <div>
-        <h3>1. Last opp CSV</h3>
-        <p class="card-text">Filen lagres i {{ orders_dir }} og legges umiddelbart i kø.</p>
-        <form id="upload-form" enctype="multipart/form-data">
-          <input type="file" name="file" accept=".csv,text/csv" required>
-          <button type="submit">Legg i kø</button>
+    <section class="grid two">
+      <div class="panel">
+        <h3>Last opp & kjør</h3>
+        <p class="card-text">Velg Shopify CSV, og kjør Bring-booking. Etiketter lagres i {{ label_dir }}.</p>
+        <form id="upload-form" enctype="multipart/form-data" style="margin-top:10px;">
+          <label class="file-picker" id="file-picker">
+            <span class="label" id="file-label">Slipp CSV her eller velg fil</span>
+            <input id="file-input" type="file" name="file" accept=".csv,text/csv" required>
+          </label>
+          <div class="stat-row" style="margin-top:8px; flex-wrap: nowrap; align-items:center;">
+            <button type="submit" data-test="false">Lag etikett</button>
+            <label class="toggle" for="test-toggle">
+              <input type="checkbox" id="test-toggle" name="test-toggle">
+              <span class="switch"></span>
+              <span>Testmodus</span>
+            </label>
+          </div>
         </form>
       </div>
-      <div>
-        <h3>2. Kjør jobber</h3>
-        <p class="card-text">Kjør Bring-booking for pending jobber og slå sammen etiketter til én PDF.</p>
-        <div class="stat-row" style="margin-top:10px;">
-          <button id="process-btn">Kjør pending nå</button>
+      <div class="panel">
+        <div style="display:flex; align-items:center; justify-content: space-between;">
+          <h3>Etiketter</h3>
+          <span class="card-text">Siste genererte PDFer</span>
         </div>
-        <p class="card-text" style="margin-top:12px;">Etiketter lagres i {{ label_dir }}.</p>
+        <div id="downloads" class="card-text" style="margin-top:8px;">
+          <div class="download-item">
+            <div class="download-name">Ingen etikett generert ennå</div>
+            <div class="download-actions">
+              <button class="secondary" disabled>Last ned</button>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px; display:flex; justify-content:flex-start;">
+          <button id="fulfill-btn" class="secondary" disabled>Fulfill ordre i Shopify</button>
+        </div>
       </div>
     </section>
 
@@ -284,6 +411,11 @@ INDEX_HTML = """
   <script>
     const ordersDir = {{ orders_dir|tojson }};
     const labelDir = {{ label_dir|tojson }};
+    const fileInput = document.getElementById('file-input');
+    const fileLabel = document.getElementById('file-label');
+    const filePicker = document.getElementById('file-picker');
+    const testToggle = document.getElementById('test-toggle');
+    const fulfillBtn = document.getElementById('fulfill-btn');
 
     const toastEl = document.getElementById('toast');
     function toast(msg, tone='info') {
@@ -307,11 +439,11 @@ INDEX_HTML = """
 
     function renderStats(stats) {
       const statEl = document.getElementById('stats');
-      const pending = stats.pending || stats.Pending || 0;
       const done = stats.done || stats.Done || 0;
       const failed = stats.failed || stats.Failed || 0;
+      const total = Object.values(stats || {}).reduce((acc, val) => acc + (Number(val) || 0), 0);
       statEl.innerHTML = `
-        <div class="stat"><label>Pending</label><strong>${pending}</strong></div>
+        <div class="stat"><label>Totalt</label><strong>${total}</strong></div>
         <div class="stat"><label>Done</label><strong>${done}</strong></div>
         <div class="stat"><label>Failed</label><strong>${failed}</strong></div>
       `;
@@ -342,37 +474,145 @@ INDEX_HTML = """
       }).join('');
     }
 
-    document.getElementById('upload-form').addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      const formData = new FormData(ev.target);
+    function renderDownloads(payload) {
+      const container = document.getElementById('downloads');
+      const mergedUrl = payload.merged_label_url;
+      const mergedName = payload.merged_label_name;
+      const labelUrls = payload.label_urls || [];
+      const labelNames = payload.label_names || [];
+      const testMode = payload.test_mode;
+
+      const makeButton = (url, text, secondary = false) =>
+        `<div class="download-actions"><a href="${url}" class="btn ${secondary ? 'secondary' : ''}" style="text-decoration:none;">${text}</a></div>`;
+
+      if (mergedUrl && mergedName) {
+        const tag = testMode ? '<span class="badge fail" style="margin-left:6px;">Test</span>' : '';
+        container.innerHTML = `
+          <div class="download-item">
+            <div class="download-name">${mergedName}${tag}</div>
+            ${makeButton(mergedUrl, 'Last ned PDF')}
+          </div>
+        `;
+        fulfillBtn.disabled = false;
+        return;
+      }
+      if (labelUrls.length) {
+        container.innerHTML = labelUrls.map((url, idx) => {
+          const name = labelNames[idx] || url.split('/').pop();
+          return `
+            <div class="download-item">
+              <div class="download-name">${name}</div>
+              ${makeButton(url, 'Last ned etikett', true)}
+            </div>
+          `;
+        }).join('');
+        fulfillBtn.disabled = false;
+        return;
+      }
+      container.innerHTML = `
+        <div class="download-item">
+          <div class="download-name">Ingen etikett generert ennå</div>
+          <div class="download-actions">
+            <button class="secondary" disabled>Last ned</button>
+          </div>
+        </div>
+      `;
+      fulfillBtn.disabled = true;
+    }
+
+    async function uploadAndProcess(formEl, isTest) {
+      const formData = new FormData(formEl);
+      const btn = formEl.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = 'Jobber...';
       try {
-        const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!data.ok) throw new Error(data.error || 'Ukjent feil');
-        const added = Array.isArray(data.orders_added) ? data.orders_added.length : 0;
-        toast(`La til ${added} jobber`);
-        ev.target.reset();
+        const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+        const uploadData = await uploadRes.json();
+        if (!uploadData.ok) throw new Error(uploadData.error || 'Ukjent feil ved opplasting');
+        const added = Array.isArray(uploadData.orders_added) ? uploadData.orders_added.length : 0;
+
+        const procRes = await fetch(`/api/process?test=${isTest ? 'true' : 'false'}`, { method: 'POST' });
+        const procData = await procRes.json();
+        if (!procData.ok) throw new Error(procData.error || 'Ukjent feil ved kjøring');
+        toast(`La til ${added} jobber og kjørte ${procData.processed_jobs || 0} jobber${isTest ? ' (testmodus)' : ''}.`);
+        renderDownloads(procData);
         loadJobs();
       } catch (err) {
         toast(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Lag etikett';
+        formEl.reset();
       }
+    }
+
+    document.getElementById('upload-form').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      uploadAndProcess(ev.target, !!testToggle.checked);
     });
 
-    document.getElementById('process-btn').addEventListener('click', async () => {
+    fulfillBtn.addEventListener('click', async () => {
+      fulfillBtn.disabled = true;
+      fulfillBtn.textContent = 'Fulfiller...';
       try {
-        const res = await fetch('/api/process', { method: 'POST' });
+        const res = await fetch('/api/fulfill', { method: 'POST' });
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || 'Ukjent feil');
-        const jobs = data.processed_jobs || 0;
-        const merged = data.merged_label ? 'Slått sammen etiketter til ' + data.merged_label : 'Ingen etiketter å slå sammen';
-        toast(`Kjørte ${jobs} jobber. ${merged}.`);
+        if (!data.ok) throw new Error(data.error || 'Ukjent feil ved fulfillment');
+        toast(`Fulfilled ${data.processed_jobs || 0} jobber i Shopify.`);
         loadJobs();
       } catch (err) {
-        toast('Kjøring feilet: ' + err.message, 'error');
+        toast(err.message, 'error');
+      } finally {
+        fulfillBtn.textContent = 'Fulfill ordre i Shopify';
       }
     });
 
-    document.getElementById('refresh-btn').addEventListener('click', () => loadJobs());
+    // Vis en deaktivert knapp fra start
+    renderDownloads({ merged_label_url: null, merged_label_name: null, label_urls: [], label_names: [], test_mode: false });
+
+    function setFileLabel(text) {
+      fileLabel.textContent = text || 'Slipp CSV her eller velg fil';
+    }
+
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files?.[0];
+      setFileLabel(f ? f.name : null);
+    });
+
+    ['dragenter','dragover'].forEach(evt => {
+      filePicker.addEventListener(evt, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        filePicker.classList.add('dragging');
+      });
+    });
+    ['dragleave','drop'].forEach(evt => {
+      filePicker.addEventListener(evt, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        filePicker.classList.remove('dragging');
+      });
+    });
+    filePicker.addEventListener('drop', (e) => {
+      const dt = e.dataTransfer;
+      if (!dt || !dt.files || !dt.files.length) return;
+      const csv = Array.from(dt.files).find(f => f.name.toLowerCase().endsWith('.csv'));
+      if (!csv) {
+        toast('Dra inn en CSV-fil', 'error');
+        return;
+      }
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(csv);
+      fileInput.files = dataTransfer.files;
+      setFileLabel(csv.name);
+    });
+
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+      try {
+        loadJobs();
+      } catch (err) {
+        toast('Kunne ikke oppdatere: ' + err.message, 'error');
+      }
+    });
+
     loadJobs();
     setInterval(loadJobs, 8000);
   </script>
