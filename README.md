@@ -36,6 +36,22 @@ BRING_CUSTOMER_NUMBER=...
 BRING_PRODUCT_ID=3584
 BRING_TEST_INDICATOR=false    # true for testetiketter
 
+# Avsender (valgfritt: default er demo-verdier)
+BRING_SENDER_NAME=Din butikk AS
+BRING_SENDER_ADDRESS=Gate 1
+BRING_SENDER_POSTAL=0123
+BRING_SENDER_CITY=Oslo
+BRING_SENDER_EMAIL=ordre@dinbutikk.no
+BRING_SENDER_PHONE=+47XXXXXXXX
+
+# Retur (brukes på både vanlige etiketter og returetiketter)
+BRING_RETURN_NAME=Din butikk AS (Retur)
+BRING_RETURN_ADDRESS=Gate 1
+BRING_RETURN_POSTAL=0123
+BRING_RETURN_CITY=Oslo
+BRING_RETURN_EMAIL=retur@dinbutikk.no
+BRING_RETURN_PHONE=+47XXXXXXXX
+
 # Shopify (valgfritt for fulfillment)
 SHOPIFY_TOKEN=...
 SHOPIFY_DOMAIN=https://yourshop.myshopify.com
@@ -56,17 +72,17 @@ LOG_FILE=./logs/packchicken.log  # valgfritt: skriv logg til fil i tillegg til s
 
 ---
 
-## Kjøring
-**I Shopify:**
-- Velg ordre og eksporter(plain CSV), lagre i `ORDERS/`.
+## Kjøring (GUI)
+- Start GUI: `PYTHONPATH=src uv run -m packchicken.gui.app` (eller `uv pip install -e .` først og deretter `uv run -m packchicken.gui.app`).
+- Åpne http://localhost:5050
+- Last opp Shopify-CSV → klikk "Lag etikett" (eller "Lag returetikett"). Vanlige etiketter bruker kunde som mottaker og avsender/retur fra miljøvariablene; returetiketter bytter sender/mottaker.
+- GUI viser nedlastingslenker, fulfillment-status for alle ordre i CSV, og en knapp for å kjøre fulfillment for alle (krever riktige Shopify-scopes).
 
-**Start packchicken ved å kjøre et av skriptene i** `LABELS/` **:**
-
-- Ekte booking + Shopify-fulfillment (krever riktige scopes): `process_orders_with_fulfill.sh`
-- Ekte booking, ingen fulfillment i Shopify: `process_orders_no_fulfill.sh`
-- Testmodus (Bring test-etiketter): `process_orders_test_mode.sh`
-
-**Resultat:** én samlet PDF i `LABELS/labels-merged-YYYYMMDD-HHMMSS.pdf`.
+## Kjøring (CLI)
+- Ekte booking + Shopify-fulfillment (krever riktige scopes): `LABELS/process_orders_with_fulfill.sh`
+- Ekte booking, ingen fulfillment i Shopify: `LABELS/process_orders_no_fulfill.sh`
+- Testmodus (Bring test-etiketter): `LABELS/process_orders_test_mode.sh`
+- **Resultat:** én samlet PDF i `LABELS/labels-merged-YYYYMMDD-HHMMSS.pdf`.
 
 ---
 
