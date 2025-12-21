@@ -90,6 +90,7 @@ docker run --rm -p 5050:5050 \
 - GUI: http://localhost:5050
 - Monter `ORDERS/` og `LABELS/` som vist for å dele filer med host.
 - Sett Bring/Shopify-nøkler via `--env-file` eller `-e`.
+- Oppdatering på andre maskiner: `git pull` → `docker compose pull` (hvis du publiserer image) eller `docker compose build` → `docker compose up -d --build`.
 
 ## Kjøring (CLI)
 - Ekte booking + Shopify-fulfillment (krever riktige scopes): `LABELS/process_orders_with_fulfill.sh`
