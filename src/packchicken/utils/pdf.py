@@ -9,6 +9,8 @@ from reportlab.lib.pagesizes import A6, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 from datetime import datetime
+from pathlib import Path
+from pypdf import PdfReader, PdfWriter
 
 
 def generate_label_only(order: dict, tracking_number: str, outfile, size: str = "A6"):
@@ -93,3 +95,20 @@ def generate_order_summary_pdf(orders: list, outfile):
 
     c.save()
     print(f"✅ Summary PDF generated: {outfile}")
+
+
+def combine_pdfs(input_paths: list[Path], output_path: Path) -> Path:
+    """
+    Slår sammen flere PDF-filer til én.
+    """
+    writer = PdfWriter()
+    for path in input_paths:
+        if not Path(path).exists():
+            continue
+        reader = PdfReader(str(path))
+        for page in reader.pages:
+            writer.add_page(page)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb") as fh:
+        writer.write(fh)
+    return output_path

@@ -86,6 +86,7 @@ To test Bring integration without real shipments:
 - Run the standalone smoke tests:
   - Shopify orders (GraphQL): `uv run scripts/check_shopify_orders_graphql.py --first 5`
   - Bring booking: `uv run scripts/check_bring_booking.py`
+- Enqueue a Shopify order as a job: `uv run scripts/enqueue_shopify_order.py --first 1`
 
 ---
 

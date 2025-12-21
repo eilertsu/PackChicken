@@ -75,31 +75,45 @@ def rows_to_job(rows: list[Dict[str, str]]) -> Dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Enqueue orders from a Shopify CSV export.")
-    parser.add_argument("--csv", required=True, help="Path to Shopify orders CSV export")
+    parser = argparse.ArgumentParser(description="Enqueue orders from Shopify CSV exports.")
+    parser.add_argument("--csv", help="Path to a Shopify orders CSV; if omitted, reads all CSV in ./ORDERS/")
     args = parser.parse_args()
 
-    csv_path = Path(args.csv)
-    if not csv_path.exists():
-        raise SystemExit(f"Finner ikke CSV: {csv_path}")
-
     db.init_db()
-    created = 0
-    grouped: dict[str, list[Dict[str, str]]] = {}
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            key = row.get("Id") or row.get("Name")
-            if not key:
-                continue
-            grouped.setdefault(key, []).append(row)
+    if args.csv:
+        csv_paths = [Path(args.csv)]
+    else:
+        orders_dir = Path("ORDERS")
+        if not orders_dir.exists():
+            raise SystemExit("Fant ingen CSV. Opprett en ORDERS/ katalog med eksportfil(er).")
+        csv_paths = sorted(orders_dir.glob("*.csv"))
+        if not csv_paths:
+            raise SystemExit("Ingen CSV-filer i ORDERS/.")
 
-    for key, rows in grouped.items():
-        job_data = rows_to_job(rows)
-        db.add_job(job_data)
-        created += 1
-        print(f"✅ La inn jobb for ordre {job_data['id']}")
-    print(f"Ferdig: la inn {created} jobber")
+    total_created = 0
+    for csv_path in csv_paths:
+        if not csv_path.exists():
+            print(f"⚠️ Hopper over {csv_path} (finnes ikke)")
+            continue
+        grouped: dict[str, list[Dict[str, str]]] = {}
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                key = row.get("Id") or row.get("Name")
+                if not key:
+                    continue
+                grouped.setdefault(key, []).append(row)
+
+        created = 0
+        for key, rows in grouped.items():
+            job_data = rows_to_job(rows)
+            db.add_job(job_data)
+            created += 1
+            total_created += 1
+            print(f"[{csv_path.name}] ✅ La inn jobb for ordre {job_data['id']}")
+        print(f"[{csv_path.name}] Ferdig: la inn {created} jobber")
+
+    print(f"Totalt lagt inn {total_created} jobber")
 
 
 if __name__ == "__main__":

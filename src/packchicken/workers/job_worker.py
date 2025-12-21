@@ -21,6 +21,7 @@ import requests
 from dotenv import load_dotenv
 
 from packchicken.utils import db
+from packchicken.utils.pdf import combine_pdfs
 from packchicken.clients.bring_client import BringClient, BringError
 from packchicken.clients.shopify_client import ShopifyClient
 
@@ -42,6 +43,7 @@ LABEL_DIR.mkdir(parents=True, exist_ok=True)
 DRY_RUN = False  # Alltid kjør ekte booking; bruk BRING_TEST_INDICATOR for test-label
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
+DOWNLOADED_LABELS: list[Path] = []
 
 SENDER = {
     "name": os.getenv("BRING_SENDER_NAME", "PackChicken Sender"),
@@ -140,6 +142,7 @@ def download_label(url: str, headers: Dict[str, str], destination: Path) -> None
             if chunk:
                 fh.write(chunk)
     logging.info("✅ Lagret label til %s", destination.resolve())
+    DOWNLOADED_LABELS.append(destination)
 
 # ------------------------------------------------------------
 # Kjernefunksjon
@@ -280,4 +283,18 @@ if __name__ == "__main__":
                 logging.exception("Uventet feil i hoved-loop")
                 time.sleep(poll_interval)
     else:
-        process_next_job()
+        while process_next_job():
+            pass
+        if DOWNLOADED_LABELS:
+            merged = LABEL_DIR / f"labels-merged-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+            try:
+                combine_pdfs(DOWNLOADED_LABELS, merged)
+                logging.info("🗂️  Slått sammen %d label(s) til %s", len(DOWNLOADED_LABELS), merged)
+                # Fjern enkeltlabelene når de er slått sammen, slik at vi bare sitter igjen med én PDF.
+                for p in DOWNLOADED_LABELS:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        logging.debug("Klarte ikke å slette %s", p, exc_info=True)
+            except Exception:
+                logging.exception("Klarte ikke å slå sammen label-PDFer")
