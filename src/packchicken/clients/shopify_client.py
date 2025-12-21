@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from packchicken.config import get_settings
 from packchicken.utils.logging import get_logger
 
 log = get_logger("packchicken.shopify")
@@ -18,18 +17,17 @@ BACKOFF_BASE = 0.6  # exponential backoff base seconds
 
 class ShopifyClient:
     def __init__(self, token: Optional[str] = None, domain: Optional[str] = None, api_version: Optional[str] = None):
-        s = get_settings()
         # Support both SHOPIFY_TOKEN and legacy SHOPIFY_ACCESS_TOKEN
-        token_env = token or s.SHOPIFY_TOKEN or os.getenv("SHOPIFY_ACCESS_TOKEN")
+        token_env = token or os.getenv("SHOPIFY_TOKEN") or os.getenv("SHOPIFY_ACCESS_TOKEN")
         if not token_env:
             raise ValueError("Missing Shopify token. Set SHOPIFY_TOKEN or SHOPIFY_ACCESS_TOKEN.")
-        domain_env = domain or s.SHOPIFY_DOMAIN
+        domain_env = domain or os.getenv("SHOPIFY_DOMAIN")
         if not domain_env:
             raise ValueError("Missing Shopify domain. Set SHOPIFY_DOMAIN (e.g. https://yourshop.myshopify.com).")
 
         self.token = token_env
         self.domain = domain_env.rstrip("/")
-        self.api_version = api_version or s.SHOPIFY_API_VERSION
+        self.api_version = api_version or os.getenv("SHOPIFY_API_VERSION", "2024-10")
 
         self.base_url = f"{self.domain}/admin/api/{self.api_version}"
         self.session = requests.Session()
