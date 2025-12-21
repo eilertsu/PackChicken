@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite
+.venv
+.uv-cache
+LABELS/
+ORDERS/
+logs/

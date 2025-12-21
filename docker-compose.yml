@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  packchicken:
+    build: .
+    ports:
+      - "5050:5050"
+    env_file:
+      - .env
+      - secrets.env
+    volumes:
+      - ./ORDERS:/app/ORDERS
+      - ./LABELS:/app/LABELS
+      - ./logs:/app/logs
+    restart: unless-stopped
