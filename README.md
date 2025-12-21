@@ -43,6 +43,14 @@ SHOPIFY_LOCATION=...          # location_id hvis fulfillment ønskes
 SHOPIFY_UPDATE_FULFILL=false  # true hvis du vil forsøke fulfillment
 ```
 
+### Hvor finner du nøklene?
+- **Bring API UID/KEY/CUSTOMER_NUMBER**: Logg inn på MyBring → “API”/“API Keys” → opprett API-bruker og noter UID (brukernavn), API-nøkkel og kundenummer. Test-kunder: 5/6/7 (hvis Bring har aktivert dem).
+- **BRING_PRODUCT_ID / BRING_TEST_INDICATOR**: Produkt-ID fra Bring Booking API (f.eks. 3584 for Home Delivery Mailbox). Sett `BRING_TEST_INDICATOR=true` for testetiketter.
+- **SHOPIFY_TOKEN**: I Shopify Admin → Apps → Develop apps → din private/custom app → API credentials → Admin API access token.
+- **SHOPIFY_DOMAIN**: `https://<shop>.myshopify.com` (fra butikkinstans).
+- **SHOPIFY_LOCATION**: I Shopify Admin → Settings → Locations → velg lokasjon → kopier Location ID fra URL (slutter på et tall).
+- **SHOPIFY_UPDATE_FULFILL**: `false` som standard; sett `true` kun hvis du har riktige fulfillment-scopes og vil at appen skal forsøke fulfillment.
+
 3) Plasser ordre-CSV i `ORDERS/` (f.eks. `ORDERS/orders_export.csv`)
 
 ---
