@@ -21,6 +21,7 @@ if str(SRC_DIR) not in sys.path:
 from packchicken.utils import db
 from packchicken.utils.orders_csv import enqueue_orders_from_csv
 from packchicken.workers.job_worker import process_all_pending_jobs
+from packchicken.clients.shopify_client import ShopifyClient
 
 # Paths and env
 for candidate in (REPO_ROOT / ".env", REPO_ROOT / "secrets.env"):
@@ -163,6 +164,41 @@ def api_fulfill():
     summary = process_all_pending_jobs(test_indicator=False, update_fulfill=True)
     summary["ok"] = True
     return jsonify(summary)
+
+
+@app.get("/api/fulfillment_status")
+def api_fulfillment_status():
+    order_ids_raw = request.args.get("order_ids") or ""
+    if not order_ids_raw:
+        oid = request.args.get("order_id")
+        if oid:
+            order_ids = [oid]
+        else:
+            return json_error("order_id(s) mangler")
+    else:
+        order_ids = [x.strip() for x in order_ids_raw.split(",") if x.strip()]
+    if not order_ids:
+        return json_error("Ingen gyldige order_id")
+    try:
+        client = ShopifyClient()
+    except Exception as exc:
+        return json_error(f"Kunne ikke initialisere Shopify: {exc}", status_code=500)
+    try:
+        all_items = []
+        for oid in order_ids:
+            fos = client.list_fulfillment_orders(oid)
+            for fo in fos.get("fulfillment_orders", []):
+                all_items.append(
+                    {
+                        "id": fo.get("id"),
+                        "status": fo.get("status") or fo.get("fulfillment_status"),
+                        "order_id": fo.get("order_id") or oid,
+                        "delivery_method": fo.get("delivery_method", {}).get("method_type") if isinstance(fo.get("delivery_method"), dict) else fo.get("delivery_method"),
+                    }
+                )
+        return jsonify({"ok": True, "orders": all_items})
+    except Exception as exc:
+        return json_error(f"Feil ved henting av fulfillment-status: {exc}", status_code=500)
 
 
 @app.get("/labels/<path:filename>")
@@ -381,9 +417,11 @@ INDEX_HTML = """
             </div>
           </div>
         </div>
-        <div style="margin-top:12px; display:flex; justify-content:flex-start;">
+        <div style="margin-top:12px; display:flex; justify-content:flex-start; gap:10px; align-items:center; flex-wrap:wrap;">
           <button id="fulfill-btn" class="secondary" disabled>Fulfill ordre i Shopify</button>
+          <span id="fulfill-status" class="card-text" style="margin-left:10px;">Fulfillment: ikke kjørt</span>
         </div>
+        <div id="fulfill-list" class="card-text" style="margin-top:10px;">Ingen ordre enda.</div>
       </div>
     </section>
 
@@ -420,6 +458,8 @@ INDEX_HTML = """
     const testToggle = document.getElementById('test-toggle');
     const fulfillBtn = document.getElementById('fulfill-btn');
     const returnBtn = document.getElementById('return-btn');
+    const fulfillStatus = document.getElementById('fulfill-status');
+    const fulfillList = document.getElementById('fulfill-list');
 
     const toastEl = document.getElementById('toast');
     function toast(msg, tone='info') {
@@ -540,6 +580,7 @@ INDEX_HTML = """
         const uploadData = await uploadRes.json();
         if (!uploadData.ok) throw new Error(uploadData.error || 'Ukjent feil ved opplasting');
         const added = Array.isArray(uploadData.orders_added) ? uploadData.orders_added.length : 0;
+        const orderIds = Array.isArray(uploadData.orders_added) ? uploadData.orders_added : [];
 
         const procRes = await fetch(`/api/process?test=${isTest ? 'true' : 'false'}&return_label=${isReturn ? 'true' : 'false'}`, { method: 'POST' });
         const procData = await procRes.json();
@@ -549,14 +590,20 @@ INDEX_HTML = """
         if (procData.errors && procData.errors.length) {
             toast(`Noen jobber feilet: ${procData.errors.join('; ').slice(0, 200)}`, 'error');
         }
+        fulfillStatus.textContent = 'Fulfillment: ikke kjørt';
         renderDownloads(procData);
         loadJobs();
+        if (!isReturn && orderIds.length) {
+          await fetchFulfillmentStatuses(orderIds);
+        } else {
+          renderFulfillList([]);
+          fulfillStatus.textContent = 'Fulfillment: ikke kjørt';
+        }
       } catch (err) {
         toast(err.message, 'error');
       } finally {
         btn.disabled = false;
         btn.textContent = originalLabel || 'Lag etikett';
-        formEl.reset();
       }
     }
 
@@ -580,14 +627,55 @@ INDEX_HTML = """
         toast(`Fulfilled ${data.processed_jobs || 0} jobber i Shopify.`);
         if (data.errors && data.errors.length) {
           toast(`Noen jobber feilet: ${data.errors.join('; ').slice(0, 200)}`, 'error');
+          fulfillStatus.textContent = `Fulfillment: delvis/feil (${data.errors.length} feil)`;
+        } else {
+          fulfillStatus.textContent = `Fulfillment: ok (${data.processed_jobs || 0} jobber)`;
         }
         loadJobs();
       } catch (err) {
         toast(err.message, 'error');
+        fulfillStatus.textContent = `Fulfillment: feil (${err.message})`;
       } finally {
         fulfillBtn.textContent = 'Fulfill ordre i Shopify';
+        fulfillBtn.disabled = false;
       }
     });
+
+    function renderFulfillList(items) {
+      if (!items || !items.length) {
+        fulfillList.textContent = 'Ingen ordre enda.';
+        return;
+      }
+      fulfillList.innerHTML = items.map(item => {
+        const st = item.status || 'ukjent';
+        return `<div>- Ordre ${item.order_id}: ${st} (FO ${item.id || ''})</div>`;
+      }).join('');
+    }
+
+    async function fetchFulfillmentStatuses(orderIds) {
+      const ids = Array.isArray(orderIds) ? orderIds.filter(Boolean) : [];
+      if (!ids.length) {
+        fulfillList.textContent = 'Ingen ordre enda.';
+        return;
+      }
+      fulfillStatus.textContent = 'Fulfillment: henter...';
+      try {
+        const res = await fetch(`/api/fulfillment_status?order_ids=${encodeURIComponent(ids.join(','))}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Ukjent feil');
+        if (!data.orders || !data.orders.length) {
+          fulfillStatus.textContent = 'Fulfillment: ingen data';
+          renderFulfillList([]);
+          return;
+        }
+        const statuses = data.orders.map(o => `${o.status || 'ukjent'} (#${o.id})`).join(', ');
+        fulfillStatus.textContent = `Fulfillment: ${statuses}`;
+        renderFulfillList(data.orders);
+      } catch (err) {
+        fulfillStatus.textContent = `Fulfillment: feil (${err.message})`;
+        toast(err.message, 'error');
+      }
+    }
 
     // Vis en deaktivert knapp fra start
     renderDownloads({ merged_label_url: null, merged_label_name: null, label_urls: [], label_names: [], test_mode: false });
