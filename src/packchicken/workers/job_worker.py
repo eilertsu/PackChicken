@@ -36,10 +36,10 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
                     format="%(asctime)s | %(levelname)-8s | %(message)s")
 
-LABEL_DIR = Path(os.getenv("LABEL_DIR", "./attachments")).resolve()
+LABEL_DIR = Path(os.getenv("LABEL_DIR", "./LABELS")).resolve()
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
 
-DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+DRY_RUN = False  # Alltid kjør ekte booking; bruk BRING_TEST_INDICATOR for test-label
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
 
@@ -164,49 +164,43 @@ def process_next_job():
         except Exception:
             logging.debug("ShopifyClient init feilet (fortsetter uten fulfillment update)", exc_info=True)
 
-        if DRY_RUN:
-            logging.info("DRY_RUN=True → simulerer Bring-booking")
-            tracking_number = f"SIM-{job_data.get('id')}-{int(time.time())}"
-            labels_url = None
-            package_number = None
-        else:
-            recipient = build_recipient(order)
-            # Hvis minimum adresse mangler, prøv å hente full ordre fra Shopify
-            if not has_min_recipient(recipient) and shopify_client:
-                try:
-                    oid = order.get("id") or order.get("order_id")
-                    full = shopify_client.get_order(oid) if oid else None
-                    if full and full.get("order"):
-                        order = full["order"]
-                        recipient = build_recipient(order)
-                        logging.info("Oppdaterte ordre fra Shopify for adressefelt. shipping_address=%s", order.get("shipping_address"))
-                except Exception:
-                    logging.exception("Kunne ikke hente ordre fra Shopify for adresseoppdatering")
+        recipient = build_recipient(order)
+        # Hvis minimum adresse mangler, prøv å hente full ordre fra Shopify
+        if not has_min_recipient(recipient) and shopify_client:
+            try:
+                oid = order.get("id") or order.get("order_id")
+                full = shopify_client.get_order(oid) if oid else None
+                if full and full.get("order"):
+                    order = full["order"]
+                    recipient = build_recipient(order)
+                    logging.info("Oppdaterte ordre fra Shopify for adressefelt. shipping_address=%s", order.get("shipping_address"))
+            except Exception:
+                logging.exception("Kunne ikke hente ordre fra Shopify for adresseoppdatering")
 
-            if not has_min_recipient(recipient):
-                logging.error("Manglende adresse etter alle forsøk. Recipient=%s", recipient)
-                raise RuntimeError("Manglende adressefelt (addressLine/city/postalCode) for mottaker")
-            shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
-            payload = bring.build_booking_payload(
-                recipient=recipient,
-                sender=SENDER,
-                return_to=RETURN_TO,
-                packages=[build_package(order)],
-                product_id=os.getenv("BRING_PRODUCT_ID", "3584"),
-                additional_services=[{"id": os.getenv("BRING_ADDITIONAL_SERVICE_ID", "1081")}],
-                shipping_datetime_iso=shipping_time,
-                reference=order.get("order_number"),
-            )
-            result = bring.book_shipment(payload)
-            consignment = (result.get("consignments") or [{}])[0]
-            confirmation = consignment.get("confirmation") or {}
-            tracking_number = confirmation.get("consignmentNumber")
-            packages = confirmation.get("packages") or []
-            package_number = packages[0].get("packageNumber") if packages else None
-            links = confirmation.get("links") or {}
-            labels_url = links.get("labels")
-            if not tracking_number:
-                raise RuntimeError(f"Bring booking mangler tracking: {result}")
+        if not has_min_recipient(recipient):
+            logging.error("Manglende adresse etter alle forsøk. Recipient=%s", recipient)
+            raise RuntimeError("Manglende adressefelt (addressLine/city/postalCode) for mottaker")
+        shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
+        payload = bring.build_booking_payload(
+            recipient=recipient,
+            sender=SENDER,
+            return_to=RETURN_TO,
+            packages=[build_package(order)],
+            product_id=os.getenv("BRING_PRODUCT_ID", "3584"),
+            additional_services=[{"id": os.getenv("BRING_ADDITIONAL_SERVICE_ID", "1081")}],
+            shipping_datetime_iso=shipping_time,
+            reference=order.get("order_number"),
+        )
+        result = bring.book_shipment(payload)
+        consignment = (result.get("consignments") or [{}])[0]
+        confirmation = consignment.get("confirmation") or {}
+        tracking_number = confirmation.get("consignmentNumber")
+        packages = confirmation.get("packages") or []
+        package_number = packages[0].get("packageNumber") if packages else None
+        links = confirmation.get("links") or {}
+        labels_url = links.get("labels")
+        if not tracking_number:
+            raise RuntimeError(f"Bring booking mangler tracking: {result}")
 
         if labels_url:
             test_suffix = "(test)-" if payload.get("testIndicator") else ""
@@ -217,7 +211,7 @@ def process_next_job():
             logging.info("Ingen labels_url i responsen; hopper over nedlasting.")
 
         # Oppdater Shopify-fulfillment hvis ønsket
-        if UPDATE_SHOPIFY_FULFILL and not DRY_RUN and shopify_client and tracking_number:
+        if UPDATE_SHOPIFY_FULFILL and shopify_client and tracking_number:
             try:
                 tracking_url = labels_url or links.get("tracking") if 'links' in locals() else None
                 order_id = order.get("id") or order.get("order_id")
