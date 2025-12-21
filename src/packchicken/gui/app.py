@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from flask import Flask, jsonify, render_template_string, request, send_from_directory
 from werkzeug.utils import secure_filename
 
@@ -34,6 +34,31 @@ LABEL_DIR.mkdir(parents=True, exist_ok=True)
 db.init_db()
 
 app = Flask(__name__)
+
+SETTINGS_KEYS = [
+    "BRING_RETURN_NAME",
+    "BRING_RETURN_ADDRESS",
+    "BRING_RETURN_ADDRESS2",
+    "BRING_RETURN_POSTAL",
+    "BRING_RETURN_CITY",
+    "BRING_RETURN_COUNTRY",
+    "BRING_RETURN_EMAIL",
+    "BRING_RETURN_PHONE",
+]
+
+
+def current_settings() -> Dict[str, str]:
+    return {k: os.getenv(k, "") or "" for k in SETTINGS_KEYS}
+
+
+def save_env_settings(updates: Dict[str, str]) -> None:
+    env_path = REPO_ROOT / ".env"
+    existing = dotenv_values(env_path) if env_path.exists() else {}
+    merged = {**{k: str(v) for k, v in existing.items()}, **{k: str(v) for k, v in updates.items()}}
+    lines = [f"{k}={v}" for k, v in merged.items()]
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # reload into process env
+    load_dotenv(env_path, override=True)
 
 
 def format_ts(value: float | None) -> str:
@@ -86,6 +111,7 @@ def index():
         INDEX_HTML,
         orders_dir=str(ORDERS_DIR),
         label_dir=str(LABEL_DIR),
+        settings=current_settings(),
     )
 
 
@@ -98,6 +124,7 @@ def api_jobs():
             "jobs": recent_jobs(),
             "orders_dir": str(ORDERS_DIR),
             "label_dir": str(LABEL_DIR),
+            "settings": current_settings(),
         }
     )
 
@@ -136,10 +163,12 @@ def api_upload():
 def api_process():
     is_test = str(request.args.get("test", "false")).lower() in {"1", "true", "yes", "y"}
     do_fulfill = str(request.args.get("fulfill", "false")).lower() in {"1", "true", "yes", "y"}
-    summary = process_all_pending_jobs(test_indicator=is_test, update_fulfill=do_fulfill)
+    return_label = str(request.args.get("return_label", "false")).lower() in {"1", "true", "yes", "y"}
+    summary = process_all_pending_jobs(test_indicator=is_test, update_fulfill=do_fulfill, return_label=return_label)
     summary["ok"] = True
     summary["test_mode"] = is_test
     summary["fulfill"] = do_fulfill
+    summary["return_label"] = return_label
     # Build download-friendly URLs for merged/single labels
     def label_url(path_str: str | None) -> str | None:
         if not path_str:
@@ -167,6 +196,16 @@ def api_fulfill():
 def serve_label(filename: str):
     # Serve generated label PDFs from LABEL_DIR
     return send_from_directory(LABEL_DIR, filename, as_attachment=True)
+
+
+@app.post("/api/settings")
+def api_settings():
+    payload = request.get_json(silent=True) or {}
+    updates = {k: v for k, v in payload.items() if k in SETTINGS_KEYS and v is not None}
+    if not updates:
+        return json_error("Ingen settings oppdatert.")
+    save_env_settings(updates)
+    return jsonify({"ok": True, "settings": current_settings()})
 
 
 INDEX_HTML = """
@@ -328,13 +367,33 @@ INDEX_HTML = """
     .download-item { margin-top: 10px; padding: 10px; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; background: rgba(255,255,255,0.02); }
     .download-name { font-weight: 600; color: var(--text); }
     .download-actions { margin-top: 8px; }
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      display: none; align-items: center; justify-content: center; z-index: 20;
+    }
+    .modal.active { display: flex; }
+    .modal-content {
+      background: #0b1220; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px;
+      padding: 20px; max-width: 520px; width: 90%;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.45);
+    }
+    .modal h3 { margin-top: 0; margin-bottom: 12px; }
+    .form-grid { display: grid; gap: 10px; }
+    .form-grid label { font-size: 12px; color: var(--muted); }
+    .form-grid input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: var(--text); }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
   </style>
 </head>
 <body>
   <div class="shell">
     <header>
-      <h1>PackChicken Dashboard</h1>
-      <p class="lead">Last opp ordre-CSV fra shopify og kjør Bring-booking fra nettleseren.</p>
+      <div style="display:flex; align-items:center; justify-content: space-between; gap:12px;">
+        <div>
+          <h1>PackChicken Dashboard</h1>
+          <p class="lead">Last opp ordre-CSV fra shopify og kjør Bring-booking fra nettleseren.</p>
+        </div>
+        <button id="settings-btn" class="secondary" style="padding:10px 12px;">Innstillinger</button>
+      </div>
     </header>
 
     <section class="panel">
@@ -357,6 +416,7 @@ INDEX_HTML = """
           </label>
           <div class="stat-row" style="margin-top:8px; flex-wrap: nowrap; align-items:center;">
             <button type="submit" data-test="false">Lag etikett</button>
+            <button type="button" id="return-btn" class="secondary">Lag returetikett</button>
             <label class="toggle" for="test-toggle">
               <input type="checkbox" id="test-toggle" name="test-toggle">
               <span class="switch"></span>
@@ -407,15 +467,61 @@ INDEX_HTML = """
       <div>LABELS: {{ label_dir }}</div>
     </footer>
   </div>
+  <div id="settings-modal" class="modal">
+    <div class="modal-content">
+      <h3>Innstillinger (returadresse)</h3>
+      <div class="form-grid">
+        <div>
+          <label for="set-return-name">Navn</label>
+          <input id="set-return-name" name="BRING_RETURN_NAME" placeholder="Din butikk AS (Retur)">
+        </div>
+        <div>
+          <label for="set-return-address">Adresse</label>
+          <input id="set-return-address" name="BRING_RETURN_ADDRESS" placeholder="Gate 1">
+        </div>
+        <div>
+          <label for="set-return-address2">Adresselinje 2</label>
+          <input id="set-return-address2" name="BRING_RETURN_ADDRESS2" placeholder="">
+        </div>
+        <div>
+          <label for="set-return-postal">Postnr</label>
+          <input id="set-return-postal" name="BRING_RETURN_POSTAL" placeholder="0123">
+        </div>
+        <div>
+          <label for="set-return-city">By</label>
+          <input id="set-return-city" name="BRING_RETURN_CITY" placeholder="Oslo">
+        </div>
+        <div>
+          <label for="set-return-country">Landkode</label>
+          <input id="set-return-country" name="BRING_RETURN_COUNTRY" placeholder="NO">
+        </div>
+        <div>
+          <label for="set-return-email">E-post</label>
+          <input id="set-return-email" name="BRING_RETURN_EMAIL" placeholder="retur@dinbutikk.no">
+        </div>
+        <div>
+          <label for="set-return-phone">Telefon</label>
+          <input id="set-return-phone" name="BRING_RETURN_PHONE" placeholder="+47XXXXXXXX">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="settings-cancel" class="secondary" type="button">Lukk</button>
+        <button id="settings-save" type="button">Lagre</button>
+      </div>
+    </div>
+  </div>
   <div id="toast"></div>
   <script>
     const ordersDir = {{ orders_dir|tojson }};
     const labelDir = {{ label_dir|tojson }};
+    const settings = {{ settings|tojson }};
     const fileInput = document.getElementById('file-input');
     const fileLabel = document.getElementById('file-label');
     const filePicker = document.getElementById('file-picker');
     const testToggle = document.getElementById('test-toggle');
     const fulfillBtn = document.getElementById('fulfill-btn');
+    const returnBtn = document.getElementById('return-btn');
+    const settingsModal = document.getElementById('settings-modal');
 
     const toastEl = document.getElementById('toast');
     function toast(msg, tone='info') {
@@ -481,6 +587,7 @@ INDEX_HTML = """
       const labelUrls = payload.label_urls || [];
       const labelNames = payload.label_names || [];
       const testMode = payload.test_mode;
+      const isReturn = payload.return_label;
 
       const makeButton = (url, text, secondary = false) =>
         `<div class="download-actions"><a href="${url}" class="btn ${secondary ? 'secondary' : ''}" style="text-decoration:none;">${text}</a></div>`;
@@ -493,7 +600,7 @@ INDEX_HTML = """
             ${makeButton(mergedUrl, 'Last ned PDF')}
           </div>
         `;
-        fulfillBtn.disabled = false;
+        fulfillBtn.disabled = isReturn;
         return;
       }
       if (labelUrls.length) {
@@ -506,7 +613,7 @@ INDEX_HTML = """
             </div>
           `;
         }).join('');
-        fulfillBtn.disabled = false;
+        fulfillBtn.disabled = isReturn;
         return;
       }
       container.innerHTML = `
@@ -520,9 +627,14 @@ INDEX_HTML = """
       fulfillBtn.disabled = true;
     }
 
-    async function uploadAndProcess(formEl, isTest) {
+    async function uploadAndProcess(formEl, isTest, isReturn, btnOverride) {
       const formData = new FormData(formEl);
-      const btn = formEl.querySelector('button[type="submit"]');
+      const btn = btnOverride || formEl.querySelector('button[type="submit"]');
+      if (!fileInput.files?.length) {
+        toast('Velg eller dra inn en CSV først', 'error');
+        return;
+      }
+      const originalLabel = btn.textContent;
       btn.disabled = true;
       btn.textContent = 'Jobber...';
       try {
@@ -531,24 +643,30 @@ INDEX_HTML = """
         if (!uploadData.ok) throw new Error(uploadData.error || 'Ukjent feil ved opplasting');
         const added = Array.isArray(uploadData.orders_added) ? uploadData.orders_added.length : 0;
 
-        const procRes = await fetch(`/api/process?test=${isTest ? 'true' : 'false'}`, { method: 'POST' });
+        const procRes = await fetch(`/api/process?test=${isTest ? 'true' : 'false'}&return_label=${isReturn ? 'true' : 'false'}`, { method: 'POST' });
         const procData = await procRes.json();
         if (!procData.ok) throw new Error(procData.error || 'Ukjent feil ved kjøring');
-        toast(`La til ${added} jobber og kjørte ${procData.processed_jobs || 0} jobber${isTest ? ' (testmodus)' : ''}.`);
+        const modeText = isReturn ? 'returetiketter' : 'etiketter';
+        toast(`La til ${added} jobber og kjørte ${procData.processed_jobs || 0} ${modeText}${isTest ? ' (testmodus)' : ''}.`);
         renderDownloads(procData);
         loadJobs();
       } catch (err) {
         toast(err.message, 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = 'Lag etikett';
+        btn.textContent = originalLabel || 'Lag etikett';
         formEl.reset();
       }
     }
 
     document.getElementById('upload-form').addEventListener('submit', (ev) => {
       ev.preventDefault();
-      uploadAndProcess(ev.target, !!testToggle.checked);
+      uploadAndProcess(ev.target, !!testToggle.checked, false, ev.submitter || undefined);
+    });
+
+    returnBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      uploadAndProcess(document.getElementById('upload-form'), !!testToggle.checked, true, returnBtn);
     });
 
     fulfillBtn.addEventListener('click', async () => {
@@ -565,6 +683,58 @@ INDEX_HTML = """
       } finally {
         fulfillBtn.textContent = 'Fulfill ordre i Shopify';
       }
+    });
+
+    // Settings modal
+    function openSettings() {
+      settingsModal.classList.add('active');
+      setSettingsForm(settings);
+    }
+    function closeSettings() {
+      settingsModal.classList.remove('active');
+    }
+    function setSettingsForm(data) {
+      document.getElementById('set-return-name').value = data.BRING_RETURN_NAME || '';
+      document.getElementById('set-return-address').value = data.BRING_RETURN_ADDRESS || '';
+      document.getElementById('set-return-address2').value = data.BRING_RETURN_ADDRESS2 || '';
+      document.getElementById('set-return-postal').value = data.BRING_RETURN_POSTAL || '';
+      document.getElementById('set-return-city').value = data.BRING_RETURN_CITY || '';
+      document.getElementById('set-return-country').value = data.BRING_RETURN_COUNTRY || '';
+      document.getElementById('set-return-email').value = data.BRING_RETURN_EMAIL || '';
+      document.getElementById('set-return-phone').value = data.BRING_RETURN_PHONE || '';
+    }
+    async function saveSettings() {
+      const payload = {
+        BRING_RETURN_NAME: document.getElementById('set-return-name').value,
+        BRING_RETURN_ADDRESS: document.getElementById('set-return-address').value,
+        BRING_RETURN_ADDRESS2: document.getElementById('set-return-address2').value,
+        BRING_RETURN_POSTAL: document.getElementById('set-return-postal').value,
+        BRING_RETURN_CITY: document.getElementById('set-return-city').value,
+        BRING_RETURN_COUNTRY: document.getElementById('set-return-country').value,
+        BRING_RETURN_EMAIL: document.getElementById('set-return-email').value,
+        BRING_RETURN_PHONE: document.getElementById('set-return-phone').value,
+      };
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Kunne ikke lagre settings');
+        setSettingsForm(data.settings || {});
+        toast('Lagret innstillinger for returadresse.');
+        closeSettings();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }
+
+    document.getElementById('settings-btn').addEventListener('click', openSettings);
+    document.getElementById('settings-cancel').addEventListener('click', closeSettings);
+    document.getElementById('settings-save').addEventListener('click', saveSettings);
+    settingsModal.addEventListener('click', (ev) => {
+      if (ev.target === settingsModal) closeSettings();
     });
 
     // Vis en deaktivert knapp fra start

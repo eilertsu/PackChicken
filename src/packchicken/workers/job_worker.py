@@ -53,29 +53,37 @@ SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
 DOWNLOADED_LABELS: list[Path] = []
 
-SENDER = {
-    "name": os.getenv("BRING_SENDER_NAME", "PackChicken Sender"),
-    "addressLine": os.getenv("BRING_SENDER_ADDRESS", "Testveien 2"),
-    "addressLine2": os.getenv("BRING_SENDER_ADDRESS2"),
-    "postalCode": os.getenv("BRING_SENDER_POSTAL", "0150"),
-    "city": os.getenv("BRING_SENDER_CITY", "Oslo"),
-    "countryCode": os.getenv("BRING_SENDER_COUNTRY", "NO"),
-    "reference": os.getenv("BRING_SENDER_REF"),
-    "contact": {
-        "name": os.getenv("BRING_SENDER_CONTACT", "Sender"),
-        "email": os.getenv("BRING_SENDER_EMAIL"),
-        "phoneNumber": os.getenv("BRING_SENDER_PHONE"),
-    },
-}
+def sender_from_env() -> Dict[str, Any]:
+    return {
+        "name": os.getenv("BRING_SENDER_NAME", "PackChicken Sender"),
+        "addressLine": os.getenv("BRING_SENDER_ADDRESS", "Testveien 2"),
+        "addressLine2": os.getenv("BRING_SENDER_ADDRESS2"),
+        "postalCode": os.getenv("BRING_SENDER_POSTAL", "0150"),
+        "city": os.getenv("BRING_SENDER_CITY", "Oslo"),
+        "countryCode": os.getenv("BRING_SENDER_COUNTRY", "NO"),
+        "reference": os.getenv("BRING_SENDER_REF"),
+        "contact": {
+            "name": os.getenv("BRING_SENDER_CONTACT", "Sender"),
+            "email": os.getenv("BRING_SENDER_EMAIL"),
+            "phoneNumber": os.getenv("BRING_SENDER_PHONE"),
+        },
+    }
 
-RETURN_TO = {
-    "name": os.getenv("BRING_RETURN_NAME", "PackChicken Return"),
-    "addressLine": os.getenv("BRING_RETURN_ADDRESS", "Alf Bjerckes vei 29"),
-    "addressLine2": os.getenv("BRING_RETURN_ADDRESS2", ""),
-    "postalCode": os.getenv("BRING_RETURN_POSTAL", "0582"),
-    "city": os.getenv("BRING_RETURN_CITY", "OSLO"),
-    "countryCode": os.getenv("BRING_RETURN_COUNTRY", "NO"),
-}
+
+def return_to_from_env() -> Dict[str, Any]:
+    return {
+        "name": os.getenv("BRING_RETURN_NAME", "PackChicken Return"),
+        "addressLine": os.getenv("BRING_RETURN_ADDRESS", "Alf Bjerckes vei 29"),
+        "addressLine2": os.getenv("BRING_RETURN_ADDRESS2", ""),
+        "postalCode": os.getenv("BRING_RETURN_POSTAL", "0582"),
+        "city": os.getenv("BRING_RETURN_CITY", "OSLO"),
+        "countryCode": os.getenv("BRING_RETURN_COUNTRY", "NO"),
+        "contact": {
+            "name": os.getenv("BRING_RETURN_CONTACT", os.getenv("BRING_RETURN_NAME", "PackChicken Return")),
+            "email": os.getenv("BRING_RETURN_EMAIL"),
+            "phoneNumber": os.getenv("BRING_RETURN_PHONE"),
+        },
+    }
 
 DEFAULT_PACKAGE = {
     "weightInKg": float(os.getenv("BRING_WEIGHT_KG", "1.1")),
@@ -156,7 +164,7 @@ def download_label(url: str, headers: Dict[str, str], destination: Path) -> None
 # Kjernefunksjon
 # ------------------------------------------------------------
 
-def process_next_job():
+def process_next_job(return_label: bool = False):
     """Behandler neste pending jobb i databasen."""
     job = db.get_next_job()
     if not job:
@@ -192,10 +200,38 @@ def process_next_job():
             logging.error("Manglende adresse etter alle forsøk. Recipient=%s", recipient)
             raise RuntimeError("Manglende adressefelt (addressLine/city/postalCode) for mottaker")
         shipping_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(microsecond=0).isoformat()
+        sender_env = sender_from_env()
+        return_to_env = return_to_from_env()
+
+        sender_payload = sender_env
+        recipient_payload = recipient
+        return_to_payload = return_to_env
+        if return_label:
+            # Bytt retning: kundens adresse som sender, og RETURN_TO/SENDER som mottaker.
+            sender_payload = recipient
+            recipient_payload = dict(return_to_env or sender_env)
+            return_to_payload = None  # ikke send return_to på returetikett (Bring bruker consignments.parties.sender/recipient)
+            # Sørg for at mottaker (lager/returadresse) har kontaktinfo for Bring-varsling.
+            contact = recipient_payload.get("contact") or {}
+            recipient_payload["contact"] = {
+                "name": contact.get("name") or recipient_payload.get("name") or sender_env["contact"].get("name"),
+                "email": contact.get("email")
+                    or os.getenv("BRING_RETURN_EMAIL")
+                    or sender_env["contact"].get("email")
+                    or recipient.get("contact", {}).get("email"),
+                "phoneNumber": contact.get("phoneNumber")
+                    or os.getenv("BRING_RETURN_PHONE")
+                    or sender_env["contact"].get("phoneNumber")
+                    or recipient.get("contact", {}).get("phoneNumber"),
+            }
+            if not (recipient_payload["contact"].get("email") or recipient_payload["contact"].get("phoneNumber")):
+                logging.error("Retur-etikett mangler epost/telefon for mottaker. Sett BRING_RETURN_EMAIL/PHONE eller BRING_SENDER_EMAIL/PHONE.")
+            logging.info("🔄 Genererer returetikett (sender=mottaker, recipient=RETURN_TO/SENDER)")
+
         payload = bring.build_booking_payload(
-            recipient=recipient,
-            sender=SENDER,
-            return_to=RETURN_TO,
+            recipient=recipient_payload,
+            sender=sender_payload,
+            return_to=return_to_payload,
             packages=[build_package(order)],
             product_id=os.getenv("BRING_PRODUCT_ID", "3584"),
             additional_services=[{"id": os.getenv("BRING_ADDITIONAL_SERVICE_ID", "1081")}],
@@ -274,6 +310,7 @@ def process_all_pending_jobs(
     merge_labels: bool = True,
     test_indicator: Optional[bool] = None,
     update_fulfill: Optional[bool] = None,
+    return_label: bool = False,
 ) -> Dict[str, Any]:
     """
     Behandler alle pending jobber én gang og returnerer et sammendrag.
@@ -294,7 +331,7 @@ def process_all_pending_jobs(
         UPDATE_SHOPIFY_FULFILL = bool(update_fulfill)
 
     while True:
-        processed = process_next_job()
+        processed = process_next_job(return_label=return_label)
         if not processed:
             break
         processed_jobs += 1
