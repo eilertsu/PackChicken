@@ -21,7 +21,7 @@ import requests
 from dotenv import load_dotenv
 
 from packchicken.utils import db
-from packchicken.utils.pdf import combine_pdfs
+from packchicken.utils.pdfmerger import combine_pdfs
 from packchicken.clients.bring_client import BringClient, BringError
 from packchicken.clients.shopify_client import ShopifyClient
 
