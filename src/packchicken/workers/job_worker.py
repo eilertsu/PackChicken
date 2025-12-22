@@ -31,7 +31,8 @@ from packchicken.clients.shopify_client import ShopifyClient
 
 for candidate in (Path(".env"), Path("secrets.env"), Path("../.env"), Path("../secrets.env")):
     if candidate.exists():
-        load_dotenv(candidate, override=True)
+        # Ikke overstyr allerede satte miljøvariabler (f.eks. fra shell)
+        load_dotenv(candidate, override=False)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE = os.getenv("LOG_FILE")  # sett til filsti for å logge til fil i tillegg til stdout

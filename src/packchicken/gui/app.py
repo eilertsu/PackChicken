@@ -26,7 +26,8 @@ from packchicken.clients.shopify_client import ShopifyClient
 # Paths and env
 for candidate in (REPO_ROOT / ".env", REPO_ROOT / "secrets.env"):
     if candidate.exists():
-        load_dotenv(candidate, override=True)
+        # Ikke overstyr eksplisitt satte miljøvariabler (f.eks. fra shell)
+        load_dotenv(candidate, override=False)
 
 ORDERS_DIR = Path(os.getenv("ORDERS_DIR", REPO_ROOT / "ORDERS")).resolve()
 LABEL_DIR = Path(os.getenv("LABEL_DIR", REPO_ROOT / "LABELS")).resolve()
