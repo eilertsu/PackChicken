@@ -51,6 +51,7 @@ LABEL_DIR.mkdir(parents=True, exist_ok=True)
 DRY_RUN = False  # Alltid kjør ekte booking; bruk BRING_TEST_INDICATOR for test-label
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
+INCLUDE_RETURN_ON_FORWARD = os.getenv("BRING_INCLUDE_RETURN", "false").lower() == "true"
 DOWNLOADED_LABELS: list[Path] = []
 PROCESS_ERRORS: list[str] = []
 
@@ -206,7 +207,7 @@ def process_next_job(return_label: bool = False):
 
         sender_payload = sender_env
         recipient_payload = recipient
-        return_to_payload = return_to_env
+        return_to_payload = return_to_env if INCLUDE_RETURN_ON_FORWARD else None
         if return_label:
             # Bytt retning: kundens adresse som sender, og RETURN_TO/SENDER som mottaker.
             sender_payload = recipient

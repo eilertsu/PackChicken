@@ -42,6 +42,7 @@ BRING_CUSTOMER_NUMBER=...
 BRING_PRODUCT_ID=3584
 BRING_CLIENT_URL=https://yourshop.example.com
 BRING_TEST_INDICATOR=false    # true for testetiketter
+BRING_INCLUDE_RETURN=false    # sett true hvis du vil sende returblokk på vanlige etiketter
 
 # Avsender (valgfritt: default er demo-verdier)
 BRING_SENDER_NAME=Din butikk AS
