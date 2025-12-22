@@ -85,20 +85,6 @@ LOG_FILE=./logs/packchicken.log  # valgfritt: skriv logg til fil i tillegg til s
 - Last opp Shopify-CSV → klikk "Lag etikett" (eller "Lag returetikett"). Vanlige etiketter bruker kunde som mottaker og avsender/retur fra miljøvariablene; returetiketter bytter sender/mottaker.
 - GUI viser nedlastingslenker, fulfillment-status for alle ordre i CSV, og en knapp for å kjøre fulfillment for alle (krever riktige Shopify-scopes).
 
-### Kjøring (Docker)
-```bash
-docker build -t packchicken .
-docker run --rm -p 5050:5050 \
-  -v $(pwd)/ORDERS:/app/ORDERS \
-  -v $(pwd)/LABELS:/app/LABELS \
-  --env-file .env \
-  packchicken
-```
-- GUI: http://localhost:5050
-- Monter `ORDERS/` og `LABELS/` som vist for å dele filer med host.
-- Sett Bring/Shopify-nøkler via `--env-file` eller `-e`.
-- Oppdatering på andre maskiner: `git pull` → `docker compose pull` (hvis du publiserer image) eller `docker compose build` → `docker compose up -d --build`.
-
 ## Kjøring (CLI)
 - Ekte booking + Shopify-fulfillment (krever riktige scopes): `LABELS/process_orders_with_fulfill.sh`
 - Ekte booking, ingen fulfillment i Shopify: `LABELS/process_orders_no_fulfill.sh`
