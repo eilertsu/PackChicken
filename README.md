@@ -101,5 +101,10 @@ LOG_FILE=./logs/packchicken.log  # valgfritt: skriv logg til fil i tillegg til s
 
 ---
 
+## Roadmap (neste steg)
+- Sende e-post til kunde med sporingsnummer (inkl. retur-etikett der det er relevant).
+
+---
+
 ## Lisens
 MIT. Se `LICENSE`.
