@@ -64,7 +64,12 @@ SHOPIFY_TOKEN=...
 SHOPIFY_DOMAIN=https://yourshop.myshopify.com
 SHOPIFY_LOCATION=...          # location_id hvis fulfillment ønskes
 SHOPIFY_UPDATE_FULFILL=false  # true hvis du vil forsøke fulfillment
+PACKCHICKEN_GUI_TOKEN=...     # valgfri Bearer token for GUI (anbefalt hvis eksponert)
+# PACKCHICKEN_GUI_USER=admin   # alternativt Basic Auth
+# PACKCHICKEN_GUI_PASSWORD=... # alternativt Basic Auth
 LOG_FILE=./logs/packchicken.log  # valgfritt: skriv logg til fil i tillegg til stdout
+ORDERS_DIR=./ORDERS             # bruk relative stier du eier (unngå /app/... hvis lokal kjøring)
+LABEL_DIR=./LABELS
 ```
 
 ### Hvor finner du nøklene?
@@ -84,6 +89,9 @@ LOG_FILE=./logs/packchicken.log  # valgfritt: skriv logg til fil i tillegg til s
 - Åpne http://localhost:5050
 - Last opp Shopify-CSV → klikk "Lag etikett" (eller "Lag returetikett"). Vanlige etiketter bruker kunde som mottaker og avsender/retur fra miljøvariablene; returetiketter bytter sender/mottaker.
 - GUI viser nedlastingslenker, fulfillment-status for alle ordre i CSV, og en knapp for å kjøre fulfillment for alle (krever riktige Shopify-scopes).
+- **Sikre GUI**: Hvis du eksponerer GUI, sett en av:
+  - `PACKCHICKEN_GUI_TOKEN=<hemmelig>` og bruk `Authorization: Bearer <hemmelig>` i klient, eller la browser spørre via 401.
+  - `PACKCHICKEN_GUI_USER` + `PACKCHICKEN_GUI_PASSWORD` for Basic Auth (browser prompt).
 
 ## Kjøring (CLI)
 - Ekte booking + Shopify-fulfillment (krever riktige scopes): `LABELS/process_orders_with_fulfill.sh`

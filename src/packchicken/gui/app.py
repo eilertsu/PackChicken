@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hmac
 import os
 import sqlite3
 import sys
@@ -36,6 +37,53 @@ LABEL_DIR.mkdir(parents=True, exist_ok=True)
 db.init_db()
 
 app = Flask(__name__)
+
+# -------- Auth (optional) --------
+AUTH_TOKEN = os.getenv("PACKCHICKEN_GUI_TOKEN") or os.getenv("PACKCHICKEN_AUTH_TOKEN")
+AUTH_USER = os.getenv("PACKCHICKEN_GUI_USER") or os.getenv("PACKCHICKEN_AUTH_USER")
+AUTH_PASS = os.getenv("PACKCHICKEN_GUI_PASSWORD") or os.getenv("PACKCHICKEN_AUTH_PASSWORD")
+AUTH_ENABLED = bool(AUTH_TOKEN or (AUTH_USER and AUTH_PASS))
+
+
+def _authorized() -> bool:
+    if not AUTH_ENABLED:
+        return True
+
+    auth_header = request.headers.get("Authorization") or ""
+    if AUTH_TOKEN and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        if token and hmac.compare_digest(token, AUTH_TOKEN):
+            return True
+
+    basic = request.authorization
+    if AUTH_USER and AUTH_PASS and basic:
+        if hmac.compare_digest(basic.username or "", AUTH_USER) and hmac.compare_digest(basic.password or "", AUTH_PASS):
+            return True
+
+    return False
+
+
+@app.before_request
+def require_auth():
+    if _authorized():
+        return None
+
+    headers = {}
+    if AUTH_USER and AUTH_PASS:
+        headers["WWW-Authenticate"] = 'Basic realm="PackChicken"'
+
+    if request.path.startswith("/api"):
+        resp = jsonify({"ok": False, "error": "Unauthorized"})
+        resp.status_code = 401
+        for k, v in headers.items():
+            resp.headers[k] = v
+        return resp
+
+    resp = jsonify({"ok": False, "error": "Unauthorized"})
+    resp.status_code = 401
+    for k, v in headers.items():
+        resp.headers[k] = v
+    return resp
 
 
 def format_ts(value: float | None) -> str:
