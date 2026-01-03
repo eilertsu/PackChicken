@@ -13,6 +13,7 @@ import os
 import time
 import json
 import logging
+import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
@@ -54,6 +55,13 @@ SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
 UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
 DOWNLOADED_LABELS: list[Path] = []
 PROCESS_ERRORS: list[str] = []
+
+
+def safe_slug(value: str) -> str:
+    # Enkle filnavn: behold bokstaver, tall, punktum, underscore, bindestrek og # for ordrenr.
+    slug = re.sub(r"[^A-Za-z0-9._#-]+", "-", value.strip())
+    slug = slug.strip("-._")
+    return slug or "order"
 
 def sender_from_env() -> Dict[str, Any]:
     return {
@@ -253,8 +261,11 @@ def process_next_job(return_label: bool = False):
             raise RuntimeError(f"Bring booking mangler tracking: {result}")
 
         if labels_url:
-            test_suffix = "(test)-" if payload.get("testIndicator") else ""
-            filename = f"label-{test_suffix}{package_number or 'unknown'}.pdf"
+            test_suffix = "-test" if payload.get("testIndicator") else ""
+            prefix = "return-label" if return_label else "label"
+            order_name = order.get("name") or order.get("order_number") or order.get("order_id") or "order"
+            order_slug = safe_slug(order_name if str(order_name).startswith("#") else f"#{order_name}")
+            filename = f"{prefix}-{order_slug}{test_suffix}.pdf"
             destination = LABEL_DIR / filename
             download_label(labels_url, bring._headers(), destination)
         else:
