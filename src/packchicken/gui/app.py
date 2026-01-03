@@ -152,6 +152,12 @@ def api_jobs():
     )
 
 
+@app.get("/api/ping")
+def api_ping():
+    # Lett helsesjekk som også trigger auth-flow hvis satt opp
+    return jsonify({"ok": True, "ts": datetime.utcnow().isoformat()})
+
+
 @app.post("/api/upload")
 def api_upload():
     if "file" not in request.files:
@@ -518,6 +524,23 @@ INDEX_HTML = """
       setTimeout(() => { toastEl.style.display = 'none'; }, 3200);
     }
 
+    // Verifiser/forny auth rett før vi gjør noe kostbart
+    async function ensureSessionFresh() {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        const res = await fetch('/api/ping', { method: 'GET', cache: 'no-store', signal: ctrl.signal });
+        if (res.status === 401 || res.status === 403) {
+          throw new Error('Sesjonen er utløpt – logg inn på nytt');
+        }
+        if (!res.ok) {
+          throw new Error('Klarte ikke å validere sesjon');
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
     async function loadJobs() {
       try {
         const res = await fetch('/api/jobs');
@@ -625,6 +648,7 @@ INDEX_HTML = """
       btn.disabled = true;
       btn.textContent = 'Jobber...';
       try {
+        await ensureSessionFresh();
         const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
         const uploadData = await uploadRes.json();
         if (!uploadData.ok) throw new Error(uploadData.error || 'Ukjent feil ved opplasting');
@@ -670,6 +694,7 @@ INDEX_HTML = """
       fulfillBtn.disabled = true;
       fulfillBtn.textContent = 'Fulfiller...';
       try {
+        await ensureSessionFresh();
         const res = await fetch('/api/fulfill', { method: 'POST' });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'Ukjent feil ved fulfillment');
