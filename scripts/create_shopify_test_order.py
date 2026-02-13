@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
+from dotenv import load_dotenv
 from packchicken.clients.shopify_client import ShopifyClient
-from packchicken.config import get_settings
 
 
 def main() -> None:
+    for candidate in (Path(".env"), Path("secrets.env"), Path("../.env"), Path("../secrets.env")):
+        if candidate.exists():
+            load_dotenv(candidate, override=False)
+            break
+
     parser = argparse.ArgumentParser(description="Create a paid, unfulfilled Shopify order.")
     parser.add_argument("--title", default="Test item", help="Line item title")
     parser.add_argument("--price", type=float, default=100.0, help="Line item price (in shop currency)")
@@ -28,9 +34,6 @@ def main() -> None:
     parser.add_argument("--country_code", default="NO", help="Shipping country code")
     parser.add_argument("--phone", default="+4790000000", help="Phone number")
     args = parser.parse_args()
-
-    settings = get_settings()
-    settings.require_shopify()
 
     client = ShopifyClient()
     name_parts = args.name.split()

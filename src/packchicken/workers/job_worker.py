@@ -299,7 +299,7 @@ def process_next_job(return_label: bool = False):
                     tracking_url=tracking_url,
                     location_id=location_id,
                     company="Bring",
-                    notify_customer=False,
+                    notify_customer=True,
                 )
                 logging.info("📦 Oppdaterte Shopify fulfillment (FO minimal) for ordre %s", order_id)
             except Exception:
