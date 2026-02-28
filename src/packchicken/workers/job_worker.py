@@ -51,8 +51,6 @@ LABEL_DIR = Path(os.getenv("LABEL_DIR", "./LABELS")).resolve()
 LABEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DRY_RUN = False  # Alltid kjør ekte booking; bruk BRING_TEST_INDICATOR for test-label
-SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION")
-UPDATE_SHOPIFY_FULFILL = os.getenv("SHOPIFY_UPDATE_FULFILL", "false").lower() == "true"
 DOWNLOADED_LABELS: list[Path] = []
 PROCESS_ERRORS: list[str] = []
 
@@ -191,7 +189,7 @@ def process_next_job(return_label: bool = False):
         try:
             shopify_client = ShopifyClient()
         except Exception:
-            logging.debug("ShopifyClient init feilet (fortsetter uten fulfillment update)", exc_info=True)
+            logging.debug("ShopifyClient init feilet (fortsetter uten Shopify-oppslag)", exc_info=True)
 
         recipient = build_recipient(order)
         # Hvis minimum adresse mangler, prøv å hente full ordre fra Shopify
@@ -271,42 +269,6 @@ def process_next_job(return_label: bool = False):
         else:
             logging.info("Ingen labels_url i responsen; hopper over nedlasting.")
 
-        # Oppdater Shopify-fulfillment hvis ønsket
-        if UPDATE_SHOPIFY_FULFILL and shopify_client and tracking_number:
-            try:
-                tracking_url = labels_url or links.get("tracking") if 'links' in locals() else None
-                order_id = order.get("id") or order.get("order_id")
-                location_id = order.get("location_id") or SHOPIFY_LOCATION_ID
-
-                # Fulfillment Orders API med minimal payload
-                fo_resp = shopify_client.list_fulfillment_orders(order_id)
-                fos = fo_resp.get("fulfillment_orders") or []
-                if not fos:
-                    raise RuntimeError("Ingen fulfillment_orders returnert for ordre")
-                fo = fos[0]
-                fulfillment_order_id = fo.get("id")
-                line_items = fo.get("line_items") or []
-                if not line_items:
-                    raise RuntimeError("Ingen line_items i fulfillment_order")
-                line_item_id = line_items[0].get("id")
-                qty = line_items[0].get("quantity") or 1
-
-                shopify_client.fulfill_fulfillment_order_minimal(
-                    fulfillment_order_id=fulfillment_order_id,
-                    line_item_id=line_item_id,
-                    quantity=qty,
-                    tracking_number=tracking_number,
-                    tracking_url=tracking_url,
-                    location_id=location_id,
-                    company="Bring",
-                    notify_customer=True,
-                )
-                logging.info("📦 Oppdaterte Shopify fulfillment (FO minimal) for ordre %s", order_id)
-            except Exception:
-                logging.exception("Kunne ikke oppdatere Shopify-fulfillment for ordre %s", order.get("id"))
-        else:
-            logging.info("Hopper over Shopify fulfillment-oppdatering (UPDATE_SHOPIFY_FULFILL=%s)", UPDATE_SHOPIFY_FULFILL)
-
         db.update_status(job_id, "done")
         logging.info("✅ Ferdig med jobb %s (tracking=%s)", job_data.get("id"), tracking_number)
 
@@ -327,27 +289,20 @@ def process_all_pending_jobs(
     poll_interval: int = 0,
     merge_labels: bool = True,
     test_indicator: Optional[bool] = None,
-    update_fulfill: Optional[bool] = None,
     return_label: bool = False,
 ) -> Dict[str, Any]:
     """
     Behandler alle pending jobber én gang og returnerer et sammendrag.
     merge_labels=True slår sammen nedlastede etiketter slik CLIen gjør.
     """
-    global UPDATE_SHOPIFY_FULFILL
     db.init_db()
     DOWNLOADED_LABELS.clear()
     PROCESS_ERRORS.clear()
     processed_jobs = 0
 
     original_test_indicator = os.environ.get("BRING_TEST_INDICATOR")
-    original_fulfill = os.environ.get("SHOPIFY_UPDATE_FULFILL")
-    original_flag = UPDATE_SHOPIFY_FULFILL
     if test_indicator is not None:
         os.environ["BRING_TEST_INDICATOR"] = "true" if test_indicator else "false"
-    if update_fulfill is not None:
-        os.environ["SHOPIFY_UPDATE_FULFILL"] = "true" if update_fulfill else "false"
-        UPDATE_SHOPIFY_FULFILL = bool(update_fulfill)
 
     while True:
         processed = process_next_job(return_label=return_label)
@@ -377,13 +332,6 @@ def process_all_pending_jobs(
             os.environ.pop("BRING_TEST_INDICATOR", None)
         else:
             os.environ["BRING_TEST_INDICATOR"] = original_test_indicator
-    if update_fulfill is not None:
-        if original_fulfill is None:
-            os.environ.pop("SHOPIFY_UPDATE_FULFILL", None)
-        else:
-            os.environ["SHOPIFY_UPDATE_FULFILL"] = original_fulfill
-        UPDATE_SHOPIFY_FULFILL = original_flag
-
     return {
         "processed_jobs": processed_jobs,
         "downloaded_labels": [str(p) for p in DOWNLOADED_LABELS],

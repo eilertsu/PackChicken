@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Kjør alle steg: legg inn jobber fra ORDERS/*.csv og hent Bring-labeler
-# Uten å oppdatere fulfillment i Shopify.
+# Kjør alle steg: legg inn jobber fra ORDERS/*.csv og hent Bring-labeler.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -17,7 +16,6 @@ fi
 
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-${REPO_DIR}/.uv-cache}"
-export SHOPIFY_UPDATE_FULFILL=false
 export BRING_TEST_INDICATOR=${BRING_TEST_INDICATOR:-false}
 
 if command -v uv >/dev/null 2>&1; then

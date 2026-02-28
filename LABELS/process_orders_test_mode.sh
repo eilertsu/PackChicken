@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # Prosesser CSV i ORDERS/ og book Bring i test-modus (BRING_TEST_INDICATOR=true).
-# Oppdaterer ikke fulfillment i Shopify.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -17,7 +16,6 @@ fi
 
 export PYTHONPATH="${REPO_DIR}/src:${PYTHONPATH:-}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-${REPO_DIR}/.uv-cache}"
-export SHOPIFY_UPDATE_FULFILL=false
 export BRING_TEST_INDICATOR=true
 
 if command -v uv >/dev/null 2>&1; then
