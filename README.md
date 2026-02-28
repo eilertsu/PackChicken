@@ -9,6 +9,7 @@ Enkel etikettmotor: les Shopify-ordre fra CSV, book hos Bring, og slå sammen al
 - Booker sending hos Bring (test/staging styres av `BRING_TEST_INDICATOR`).
 - Laster ned Bring-PDFene og slår dem sammen til én fil i `LABELS/` (enkeltlabelene slettes).
 - Oppretter ikke Shopify-fulfillment; appen brukes kun til booking/etiketter hos Bring.
+- Kan synke Bring-sporingsnummer til eksisterende Shopify-fulfillment (manuell fulfillment i Shopify beholdes).
 
 ---
 
@@ -94,18 +95,53 @@ LABEL_DIR=./LABELS
 - Testmodus (Bring test-etiketter): `LABELS/process_orders_test_mode.sh`
 - **Resultat:** én samlet PDF i `LABELS/labels-merged-YYYYMMDD-HHMMSS.pdf`.
 
+## Shopify tracking-sync (uten auto-fulfillment)
+Bruk dette hvis du vil:
+- Fulfille ordre manuelt i Shopify.
+- Sende Bring tracking automatisk til samme fulfillment etterpå.
+
+Anbefalt flyt:
+1) Start tracking-sync i bakgrunnen:
+```bash
+cd PackChicken
+LABELS/start_tracking_sync_watch.sh
+```
+2) Lag etikett i PackChicken (Bring-booking lagrer tracking i databasen).
+3) Fulfill manuelt i Shopify, men la `Send notification` være AV.
+4) Sync-scriptet oppdaterer tracking på fulfillment og sender Shopify-mail med tracking.
+
+Kjør én runde:
+```bash
+cd PackChicken
+PYTHONPATH=src uv run scripts/sync_tracking_to_shopify.py
+```
+
+Kjør kontinuerlig:
+```bash
+cd PackChicken
+PYTHONPATH=src uv run scripts/sync_tracking_to_shopify.py --watch --interval 30
+```
+
+Tips:
+- Kryss av/innstilling for kundemail når tracking legges inn styres av sync-skriptet (`notify_customer=true` som default).
+- Hvis ordren ikke er fulfilled ennå i Shopify, venter jobben til neste sync-runde.
+- Snarveier finnes i `LABELS/`: `start_tracking_sync_watch.sh` (kontinuerlig) og `sync_tracking_once.sh` (én runde).
+
 ---
 
 ## Verktøy og skript
 - `scripts/enqueue_orders_from_csv.py` — legger jobber fra `ORDERS/*.csv` i SQLite-køen.
 - `src/packchicken/workers/job_worker.py` — henter jobber, booker Bring, laster ned og merger etiketter.
+- `scripts/sync_tracking_to_shopify.py` — oppdaterer tracking på eksisterende Shopify-fulfillment (uten å opprette fulfillment).
+- `LABELS/start_tracking_sync_watch.sh` — starter kontinuerlig tracking-sync.
+- `LABELS/sync_tracking_once.sh` — kjører én tracking-sync-runde.
 - `scripts/check_bring_booking.py` — manuell Bring-smoke-test.
 - `scripts/create_shopify_test_order.py` — lager testordre i Shopify (om du har token/scopes).
 
 ---
 
 ## Roadmap (neste steg)
-- Sende e-post til kunde med sporingsnummer (inkl. retur-etikett der det er relevant).
+- Shopify webhook-stotte for helt hendelsesdrevet tracking-sync (uten polling).
 
 ---
 

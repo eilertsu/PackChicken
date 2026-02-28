@@ -204,3 +204,39 @@ class ShopifyClient:
             f"/fulfillments.json",
             json=payload,
         )
+
+    def list_fulfillments(self, order_id: int | str) -> Dict[str, Any]:
+        """
+        List fulfillments for an order.
+        """
+        return self._request("GET", f"/orders/{order_id}/fulfillments.json")
+
+    def update_fulfillment_tracking(
+        self,
+        fulfillment_id: int | str,
+        tracking_number: str,
+        tracking_url: Optional[str] = None,
+        company: str = "Bring",
+        notify_customer: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Update tracking info on an existing fulfillment.
+        Does not create a new fulfillment.
+        """
+        payload: Dict[str, Any] = {
+            "fulfillment": {
+                "notify_customer": bool(notify_customer),
+                "tracking_info": {
+                    "number": tracking_number,
+                    "company": company,
+                },
+            }
+        }
+        if tracking_url:
+            payload["fulfillment"]["tracking_info"]["url"] = tracking_url
+
+        return self._request(
+            "POST",
+            f"/fulfillments/{fulfillment_id}/update_tracking.json",
+            json=payload,
+        )

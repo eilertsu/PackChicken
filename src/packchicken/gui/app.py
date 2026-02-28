@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,25 @@ AUTH_TOKEN = os.getenv("PACKCHICKEN_GUI_TOKEN") or os.getenv("PACKCHICKEN_AUTH_T
 AUTH_USER = os.getenv("PACKCHICKEN_GUI_USER") or os.getenv("PACKCHICKEN_AUTH_USER")
 AUTH_PASS = os.getenv("PACKCHICKEN_GUI_PASSWORD") or os.getenv("PACKCHICKEN_AUTH_PASSWORD")
 AUTH_ENABLED = bool(AUTH_TOKEN or (AUTH_USER and AUTH_PASS))
+LOG_FILE_PATH = Path(os.getenv("LOG_FILE", REPO_ROOT / "logs/packchicken.log")).resolve()
+
+
+def _git_commit_short() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit = (result.stdout or "").strip()
+        return commit or "unknown"
+    except Exception:
+        return "unknown"
+
+
+APP_VERSION = _git_commit_short()
 
 
 def _authorized() -> bool:
@@ -107,7 +127,21 @@ def recent_jobs(limit: int = 20) -> list[Dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute(
-            "SELECT id, order_id, status, created_at, updated_at FROM jobs ORDER BY id DESC LIMIT ?",
+            """
+            SELECT
+                id,
+                order_id,
+                status,
+                created_at,
+                updated_at,
+                tracking_number,
+                tracking_url,
+                shopify_tracking_synced_at,
+                shopify_tracking_sync_error
+            FROM jobs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
             (limit,),
         )
         rows = c.fetchall()
@@ -118,6 +152,53 @@ def recent_jobs(limit: int = 20) -> list[Dict[str, Any]]:
             "status": row["status"],
             "created_at": format_ts(row["created_at"]),
             "updated_at": format_ts(row["updated_at"]),
+            "tracking_number": row["tracking_number"],
+            "tracking_url": row["tracking_url"],
+            "shopify_tracking_synced_at": format_ts(row["shopify_tracking_synced_at"]),
+            "shopify_tracking_sync_error": row["shopify_tracking_sync_error"],
+        }
+        for row in rows
+    ]
+
+
+def tracking_jobs(limit: int = 500) -> list[Dict[str, Any]]:
+    """
+    Hent jobber som har trackingnummer, så alle sporbare pakker blir synlige i GUI.
+    """
+    lim = max(1, min(int(limit), 5000))
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT
+                id,
+                order_id,
+                status,
+                updated_at,
+                tracking_number,
+                tracking_url,
+                shopify_tracking_synced_at,
+                shopify_tracking_sync_error
+            FROM jobs
+            WHERE tracking_number IS NOT NULL
+              AND tracking_number != ''
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (lim,),
+        )
+        rows = c.fetchall()
+    return [
+        {
+            "id": row["id"],
+            "order_id": row["order_id"],
+            "status": row["status"],
+            "updated_at": format_ts(row["updated_at"]),
+            "tracking_number": row["tracking_number"],
+            "tracking_url": row["tracking_url"],
+            "shopify_tracking_synced_at": format_ts(row["shopify_tracking_synced_at"]),
+            "shopify_tracking_sync_error": row["shopify_tracking_sync_error"],
         }
         for row in rows
     ]
@@ -135,18 +216,48 @@ def index():
         INDEX_HTML,
         orders_dir=str(ORDERS_DIR),
         label_dir=str(LABEL_DIR),
+        app_version=APP_VERSION,
     )
 
 
 @app.get("/api/jobs")
 def api_jobs():
+    tracked = tracking_jobs()
     return jsonify(
         {
             "ok": True,
             "stats": job_stats(),
             "jobs": recent_jobs(),
+            "tracking_jobs": tracked,
+            "tracking_jobs_count": len(tracked),
             "orders_dir": str(ORDERS_DIR),
             "label_dir": str(LABEL_DIR),
+            "app_version": APP_VERSION,
+        }
+    )
+
+
+@app.get("/api/logs")
+def api_logs():
+    if not LOG_FILE_PATH.exists():
+        return jsonify(
+            {
+                "ok": True,
+                "log_path": str(LOG_FILE_PATH),
+                "log_exists": False,
+                "log_content": "",
+            }
+        )
+    try:
+        content = LOG_FILE_PATH.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return json_error(f"Klarte ikke å lese loggfil: {exc}", status_code=500)
+    return jsonify(
+        {
+            "ok": True,
+            "log_path": str(LOG_FILE_PATH),
+            "log_exists": True,
+            "log_content": content,
         }
     )
 
@@ -365,6 +476,10 @@ INDEX_HTML = """
     }
     .badge.fail { background: rgba(248,113,113,0.12); color: var(--error); }
     .badge.done { background: rgba(52,211,153,0.14); color: #34d399; }
+    .badge.wait { background: rgba(250,204,21,0.16); color: #facc15; }
+    .badge.warn { background: rgba(251,146,60,0.16); color: #fb923c; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .subtle { color: var(--muted); font-size: 12px; margin-top: 2px; }
     footer { margin-top: 22px; color: var(--muted); font-size: 13px; }
     #toast {
       position: fixed; right: 22px; bottom: 22px; padding: 12px 14px;
@@ -376,6 +491,49 @@ INDEX_HTML = """
     .download-item { margin-top: 10px; padding: 10px; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; background: rgba(255,255,255,0.02); }
     .download-name { font-weight: 600; color: var(--text); }
     .download-actions { margin-top: 8px; }
+    .table-wrap { max-height: 340px; overflow-y: auto; border-radius: 10px; }
+    .log-modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(2, 6, 23, 0.72);
+      z-index: 1000;
+      padding: 16px;
+    }
+    .log-modal.show { display: flex; }
+    .log-card {
+      width: min(1200px, 100%);
+      max-height: 88vh;
+      background: rgba(17, 24, 39, 0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .log-body {
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #d1d5db;
+      background: rgba(2,6,23,0.6);
+      flex: 1;
+    }
   </style>
 </head>
 <body>
@@ -432,18 +590,36 @@ INDEX_HTML = """
 
     <section class="panel">
       <div style="display:flex; align-items:center; justify-content: space-between;">
+        <h3>Sporingsoversikt</h3>
+        <span class="card-text" id="tracking-count">0 med tracking</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Ordre</th><th>Tracking</th><th>Shopify tracking/mail</th><th>Sist oppdatert</th></tr>
+          </thead>
+          <tbody id="tracking-body">
+            <tr><td colspan="4">Ingen pakker med tracking ennå.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div style="display:flex; align-items:center; justify-content: space-between;">
         <h3>Siste jobber</h3>
         <div style="display:flex; align-items:center; gap:10px;">
           <span class="card-text" id="job-count"></span>
+          <button id="show-logs-btn" class="secondary" style="padding:8px 12px;">Vis logg</button>
           <button id="refresh-btn" class="secondary" style="padding:8px 12px;">Oppdater</button>
         </div>
       </div>
       <table>
         <thead>
-          <tr><th>ID</th><th>Ordre</th><th>Status</th><th>Opprettet</th><th>Oppdatert</th></tr>
+          <tr><th>ID</th><th>Ordre</th><th>Status</th><th>Tracking</th><th>Shopify tracking/mail</th><th>Opprettet</th><th>Oppdatert</th></tr>
         </thead>
         <tbody id="jobs-body">
-          <tr><td colspan="5">Ingen jobber ennå.</td></tr>
+          <tr><td colspan="7">Ingen jobber ennå.</td></tr>
         </tbody>
       </table>
     </section>
@@ -451,7 +627,23 @@ INDEX_HTML = """
     <footer>
       <div>ORDERS: {{ orders_dir }}</div>
       <div>LABELS: {{ label_dir }}</div>
+      <div>VERSJON: {{ app_version }}</div>
     </footer>
+  </div>
+  <div id="log-modal" class="log-modal">
+    <div class="log-card">
+      <div class="log-header">
+        <div>
+          <strong>PackChicken logg</strong>
+          <div class="subtle" id="log-path"></div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button id="refresh-logs-btn" class="secondary" style="padding:8px 12px;">Oppdater logg</button>
+          <button id="close-logs-btn" class="secondary" style="padding:8px 12px;">Lukk</button>
+        </div>
+      </div>
+      <pre id="log-content" class="log-body">Laster logg...</pre>
+    </div>
   </div>
   <div id="toast"></div>
   <script>
@@ -462,6 +654,9 @@ INDEX_HTML = """
     const filePicker = document.getElementById('file-picker');
     const testToggle = document.getElementById('test-toggle');
     const returnBtn = document.getElementById('return-btn');
+    const logModal = document.getElementById('log-modal');
+    const logContentEl = document.getElementById('log-content');
+    const logPathEl = document.getElementById('log-path');
 
     const toastEl = document.getElementById('toast');
     function toast(msg, tone='info') {
@@ -495,8 +690,30 @@ INDEX_HTML = """
         if (!data.ok) { throw new Error(data.error || 'Ukjent feil'); }
         renderStats(data.stats || {});
         renderJobs(data.jobs || []);
+        renderTrackingJobs(data.tracking_jobs || []);
+        const trackingCountEl = document.getElementById('tracking-count');
+        trackingCountEl.textContent = `${Number(data.tracking_jobs_count || 0)} med tracking`;
       } catch (err) {
         toast('Klarte ikke å hente jobber: ' + err.message, 'error');
+      }
+    }
+
+    async function loadLogs() {
+      logContentEl.textContent = 'Laster logg...';
+      try {
+        const res = await fetch('/api/logs');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Ukjent feil');
+        logPathEl.textContent = data.log_path || '';
+        if (!data.log_exists) {
+          logContentEl.textContent = 'Loggfil finnes ikke ennå.';
+          return;
+        }
+        logContentEl.textContent = data.log_content || '(tom loggfil)';
+        logContentEl.scrollTop = logContentEl.scrollHeight;
+      } catch (err) {
+        logContentEl.textContent = '';
+        toast('Klarte ikke å hente logg: ' + err.message, 'error');
       }
     }
 
@@ -517,21 +734,106 @@ INDEX_HTML = """
       const countEl = document.getElementById('job-count');
       countEl.textContent = jobs.length ? `${jobs.length} siste jobber` : 'Ingen jobber enda';
       if (!jobs.length) {
-        body.innerHTML = '<tr><td colspan="5">Ingen jobber ennå.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7">Ingen jobber ennå.</td></tr>';
         return;
+      }
+      function esc(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
       }
       body.innerHTML = jobs.map(row => {
         const status = (row.status || '').toLowerCase();
         let badgeClass = 'badge';
         if (status === 'failed') badgeClass += ' fail';
         if (status === 'done') badgeClass += ' done';
+        const trackingNumber = row.tracking_number || '';
+        const trackingCell = trackingNumber
+          ? `<div class="mono">${esc(trackingNumber)}</div>`
+          : `<span class="subtle">Ikke boket ennå</span>`;
+
+        const syncError = (row.shopify_tracking_sync_error || '').trim();
+        const syncedAt = row.shopify_tracking_synced_at || '';
+        let syncBadge = '<span class="badge">Ikke startet</span>';
+        let syncSubtext = '';
+        if (syncedAt) {
+          syncBadge = '<span class="badge done">Sendt</span>';
+          syncSubtext = `<div class="subtle">${esc(syncedAt)}</div>`;
+        } else if (syncError) {
+          const lowerErr = syncError.toLowerCase();
+          if (lowerErr.includes('ikke fulfilled ennå') || lowerErr.includes('ikke fulfilled')) {
+            syncBadge = '<span class="badge wait">Venter på fulfill</span>';
+          } else {
+            syncBadge = '<span class="badge warn">Sync-feil</span>';
+          }
+          syncSubtext = `<div class="subtle">${esc(syncError)}</div>`;
+        } else if (trackingNumber && status === 'done') {
+          syncBadge = '<span class="badge wait">Klar for sync</span>';
+        }
+
         return `
           <tr>
             <td>${row.id}</td>
-            <td>${row.order_id || ''}</td>
-            <td><span class="${badgeClass}">${row.status || ''}</span></td>
-            <td>${row.created_at || ''}</td>
-            <td>${row.updated_at || ''}</td>
+            <td class="mono">${esc(row.order_id || '')}</td>
+            <td><span class="${badgeClass}">${esc(row.status || '')}</span></td>
+            <td>${trackingCell}</td>
+            <td>${syncBadge}${syncSubtext}</td>
+            <td>${esc(row.created_at || '')}</td>
+            <td>${esc(row.updated_at || '')}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderTrackingJobs(rows) {
+      const body = document.getElementById('tracking-body');
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="4">Ingen pakker med tracking ennå.</td></tr>';
+        return;
+      }
+      function esc(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+      body.innerHTML = rows.map(row => {
+        const trackingNumber = row.tracking_number || '';
+        const trackingUrl = row.tracking_url || '';
+        const trackingHtml = trackingUrl
+          ? `<a class="mono" href="${esc(trackingUrl)}" target="_blank" rel="noopener noreferrer">${esc(trackingNumber)}</a>`
+          : `<span class="mono">${esc(trackingNumber)}</span>`;
+
+        const syncError = (row.shopify_tracking_sync_error || '').trim();
+        const syncedAt = row.shopify_tracking_synced_at || '';
+        let syncBadge = '<span class="badge">Ikke startet</span>';
+        let syncSubtext = '';
+        if (syncedAt) {
+          syncBadge = '<span class="badge done">Sendt</span>';
+          syncSubtext = `<div class="subtle">${esc(syncedAt)}</div>`;
+        } else if (syncError) {
+          const lowerErr = syncError.toLowerCase();
+          if (lowerErr.includes('ikke fulfilled ennå') || lowerErr.includes('ikke fulfilled')) {
+            syncBadge = '<span class="badge wait">Venter på fulfill</span>';
+          } else {
+            syncBadge = '<span class="badge warn">Sync-feil</span>';
+          }
+          syncSubtext = `<div class="subtle">${esc(syncError)}</div>`;
+        } else if (trackingNumber) {
+          syncBadge = '<span class="badge wait">Klar for sync</span>';
+        }
+
+        return `
+          <tr>
+            <td class="mono">${esc(row.order_id || '')}</td>
+            <td>${trackingHtml}</td>
+            <td>${syncBadge}${syncSubtext}</td>
+            <td>${esc(row.updated_at || '')}</td>
           </tr>
         `;
       }).join('');
@@ -668,6 +970,25 @@ INDEX_HTML = """
         loadJobs();
       } catch (err) {
         toast('Kunne ikke oppdatere: ' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('show-logs-btn').addEventListener('click', async () => {
+      logModal.classList.add('show');
+      await loadLogs();
+    });
+
+    document.getElementById('refresh-logs-btn').addEventListener('click', async () => {
+      await loadLogs();
+    });
+
+    document.getElementById('close-logs-btn').addEventListener('click', () => {
+      logModal.classList.remove('show');
+    });
+
+    logModal.addEventListener('click', (ev) => {
+      if (ev.target === logModal) {
+        logModal.classList.remove('show');
       }
     });
 

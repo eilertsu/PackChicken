@@ -257,6 +257,9 @@ def process_next_job(return_label: bool = False):
         labels_url = links.get("labels")
         if not tracking_number:
             raise RuntimeError(f"Bring booking mangler tracking: {result}")
+        tracking_url = links.get("tracking") if isinstance(links, dict) else None
+        if not tracking_url:
+            tracking_url = f"https://sporing.bring.no/sporing/{tracking_number}"
 
         if labels_url:
             test_suffix = "-test" if payload.get("testIndicator") else ""
@@ -269,6 +272,7 @@ def process_next_job(return_label: bool = False):
         else:
             logging.info("Ingen labels_url i responsen; hopper over nedlasting.")
 
+        db.save_tracking(job_id, tracking_number=tracking_number, tracking_url=tracking_url)
         db.update_status(job_id, "done")
         logging.info("✅ Ferdig med jobb %s (tracking=%s)", job_data.get("id"), tracking_number)
 
